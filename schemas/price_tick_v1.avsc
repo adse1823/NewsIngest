@@ -1,0 +1,14 @@
+{
+  "type": "record",
+  "name": "PriceTick",
+  "namespace": "com.finplatform",
+  "fields": [
+    {"name": "ticker", "type": "string"},
+    {"name": "open",   "type": "double"},
+    {"name": "high",   "type": "double"},
+    {"name": "low",    "type": "double"},
+    {"name": "close",  "type": "double"},
+    {"name": "volume", "type": "long"},
+    {"name": "ts",     "type": {"type": "long", "logicalType": "timestamp-millis"}}
+  ]
+}

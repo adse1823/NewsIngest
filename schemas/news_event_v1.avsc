@@ -1,0 +1,12 @@
+{
+  "type": "record",
+  "name": "NewsEvent",
+  "namespace": "com.finplatform",
+  "fields": [
+    {"name": "title",  "type": "string"},
+    {"name": "source", "type": "string"},
+    {"name": "ticker", "type": "string"},
+    {"name": "ts",     "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "url",    "type": ["null", "string"], "default": null}
+  ]
+}

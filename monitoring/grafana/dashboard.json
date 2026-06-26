@@ -1,0 +1,61 @@
+{
+  "title": "Financial Intelligence Platform",
+  "uid": "fin-platform",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "15s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Predictions per minute",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {
+          "expr": "rate(fin_predict_requests_total{endpoint=\"predict\"}[1m]) * 60",
+          "legendFormat": "predictions/min"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Prediction latency p50 / p95",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, rate(fin_predict_latency_seconds_bucket{endpoint=\"predict\"}[5m]))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(fin_predict_latency_seconds_bucket{endpoint=\"predict\"}[5m]))",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Error rate",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {
+          "expr": "rate(fin_predict_errors_total[5m])",
+          "legendFormat": "errors/sec"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Cumulative predictions",
+      "type": "stat",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {
+          "expr": "sum(fin_predict_requests_total{endpoint=\"predict\"})",
+          "legendFormat": "total predictions"
+        }
+      ]
+    }
+  ]
+}

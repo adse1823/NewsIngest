@@ -1,0 +1,38 @@
+# Virtual environment
+venv/
+.venv/
+
+# Environment variables
+.env
+
+# Data and outputs
+data/
+*.parquet
+*.npy
+*.pt
+*.duckdb
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Jupyter
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
