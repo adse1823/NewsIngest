@@ -1,13 +1,11 @@
 import os
 import time
+import sqlite3
 import logging
 from datetime import datetime, timezone
 
+import pandas as pd
 import yfinance as yf
-from confluent_kafka import Producer
-from confluent_kafka.schema_registry import SchemaRegistryClient
-from confluent_kafka.schema_registry.avro import AvroSerializer
-from confluent_kafka.serialization import SerializationContext, MessageField
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -15,31 +13,40 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM", "BAC", "GS"]
-TOPIC = "price-ticks"
 POLL_INTERVAL = 30
-
-SCHEMA_STR = open(os.path.join(os.path.dirname(__file__), "..", "schemas", "price_tick_v1.avsc")).read()
-
-
-def delivery_report(err, msg):
-    if err:
-        log.error("Delivery failed for %s: %s", msg.key(), err)
-    else:
-        log.debug("Delivered to %s [%d] offset %d", msg.topic(), msg.partition(), msg.offset())
+DB_PATH = "./data/raw.db"
 
 
-def build_serializer(registry_url: str) -> AvroSerializer:
-    sr_client = SchemaRegistryClient({"url": registry_url})
-    return AvroSerializer(sr_client, SCHEMA_STR)
+def init_db(con: sqlite3.Connection):
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS price_ticks (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker      TEXT NOT NULL,
+            open        REAL,
+            high        REAL,
+            low         REAL,
+            close       REAL,
+            volume      INTEGER,
+            ts          INTEGER NOT NULL,
+            inserted_at INTEGER NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_price_ticker ON price_ticks (ticker)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_price_ts    ON price_ticks (ts)")
+    con.commit()
 
 
 def fetch_tick(ticker: str) -> dict | None:
     try:
-        df = yf.download(ticker, period="1d", interval="1m", progress=False, auto_adjust=True)
+        # period="5d" ensures we get the last available candle even outside market hours
+        df = yf.download(ticker, period="5d", interval="1m", progress=False, auto_adjust=True)
         if df.empty:
+            log.warning("No data returned for %s (market may be closed)", ticker)
             return None
+        # Flatten multi-level columns yfinance sometimes returns
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
         row = df.iloc[-1]
-        ts_ms = int(df.index[-1].timestamp() * 1000)
         return {
             "ticker": ticker,
             "open":   float(row["Open"]),
@@ -47,46 +54,41 @@ def fetch_tick(ticker: str) -> dict | None:
             "low":    float(row["Low"]),
             "close":  float(row["Close"]),
             "volume": int(row["Volume"]),
-            "ts":     ts_ms,
+            "ts":     int(df.index[-1].timestamp() * 1000),
         }
     except Exception as exc:
         log.warning("yfinance error for %s: %s", ticker, exc)
         return None
 
 
+def insert_tick(con: sqlite3.Connection, tick: dict):
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    con.execute(
+        """INSERT INTO price_ticks (ticker, open, high, low, close, volume, ts, inserted_at)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (tick["ticker"], tick["open"], tick["high"], tick["low"],
+         tick["close"], tick["volume"], tick["ts"], now_ms),
+    )
+    con.commit()
+
+
 def main():
-    registry_url = os.getenv("SCHEMA_REGISTRY_URL", "http://localhost:8081")
-    broker = os.getenv("REDPANDA_BROKERS", "localhost:29092")
+    os.makedirs("./data", exist_ok=True)
+    con = sqlite3.connect(DB_PATH)
+    init_db(con)
 
-    serializer = build_serializer(registry_url)
-    producer = Producer({"bootstrap.servers": broker})
-
-    log.info("Price producer started. Polling every %ds.", POLL_INTERVAL)
+    log.info("Price producer started (Phase 1 — writing to SQLite). Polling every %ds.", POLL_INTERVAL)
 
     while True:
+        total = 0
         for ticker in TICKERS:
             tick = fetch_tick(ticker)
-            if tick is None:
-                continue
+            if tick:
+                insert_tick(con, tick)
+                total += 1
+                log.debug("Inserted tick for %s: close=%.2f", ticker, tick["close"])
 
-            try:
-                serialized = serializer(
-                    tick,
-                    SerializationContext(TOPIC, MessageField.VALUE),
-                )
-                producer.produce(
-                    topic=TOPIC,
-                    key=ticker.encode(),
-                    value=serialized,
-                    on_delivery=delivery_report,
-                )
-            except Exception as exc:
-                log.error("Serialization/produce error for %s: %s", ticker, exc)
-
-            producer.poll(0)
-
-        producer.flush()
-        log.info("Price batch produced. Sleeping %ds.", POLL_INTERVAL)
+        log.info("Batch complete — %d ticks written to %s", total, DB_PATH)
         time.sleep(POLL_INTERVAL)
 
 

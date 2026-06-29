@@ -130,7 +130,7 @@ financial-intelligence-platform/
 │
 ├── docker-compose.yml              # Redpanda + Schema Registry + Prometheus + Grafana
 ├── requirements.txt
-├── .env.example
+<!-- ├── .env.example -->
 │
 ├── schemas/
 │   ├── news_event_v1.avsc          # Avro schema for news headlines

@@ -16,7 +16,7 @@ log = logging.getLogger(__name__)
 
 DB_PATH = "./data/feature_store.duckdb"
 GNN_PATH = "./data/gnn_embeddings.parquet"
-N_SPLITS = 5
+N_SPLITS = 2
 MLFLOW_EXPERIMENT = "fin-platform"
 
 LGB_PARAMS = {
@@ -94,6 +94,10 @@ def main():
             X_train, X_val = X[train_idx], X[val_idx]
             y_train, y_val = y[train_idx], y[val_idx]
 
+            if len(np.unique(y_val)) < 2:
+                log.warning("Fold %d skipped — only one class in validation set", fold)
+                continue
+
             model = lgb.LGBMClassifier(**LGB_PARAMS)
             model.fit(X_train, y_train, eval_set=[(X_val, y_val)])
 
@@ -103,9 +107,13 @@ def main():
             mlflow.log_metric(f"fold_{fold}_auc", auc)
             log.info("Fold %d AUC: %.4f", fold, auc)
 
-        mean_auc = float(np.mean(auc_scores))
+        if not auc_scores:
+            log.warning("No valid folds — skipping AUC logging (need more data for meaningful CV)")
+            mean_auc = 0.0
+        else:
+            mean_auc = float(np.mean(auc_scores))
+            log.info("Mean AUC across %d folds: %.4f", len(auc_scores), mean_auc)
         mlflow.log_metric("mean_auc", mean_auc)
-        log.info("Mean AUC across %d folds: %.4f", N_SPLITS, mean_auc)
 
         final_model = lgb.LGBMClassifier(**LGB_PARAMS)
         final_model.fit(X, y)

@@ -1,21 +1,17 @@
--- Rolling window features joined with price data
-CREATE TABLE IF NOT EXISTS features_sentiment AS
-WITH news AS (
+-- Window price ticks into 5-minute buckets then join with news windows
+-- This replaces what Spark was doing in Phase 2
+CREATE OR REPLACE TABLE features_sentiment AS
+WITH price_windows AS (
     SELECT
-        window_start,
+        time_bucket(INTERVAL '5 minutes', to_timestamp(CAST(ts AS DOUBLE) / 1000)) AS window_start,
         ticker,
-        headline_count
-    FROM raw_news
-),
-prices AS (
-    SELECT
-        window_start,
-        ticker,
-        avg_close,
-        avg_volume,
-        pct_change
-    FROM read_parquet('./data/windowed/prices/**/*.parquet', hive_partitioning = false)
+        AVG(close)                                    AS avg_close,
+        AVG(volume)                                   AS avg_volume,
+        (LAST(close ORDER BY ts) - FIRST(close ORDER BY ts))
+            / NULLIF(FIRST(close ORDER BY ts), 0) * 100 AS pct_change
+    FROM sqlite_db.price_ticks
     WHERE ticker IS NOT NULL
+    GROUP BY window_start, ticker
 ),
 joined AS (
     SELECT
@@ -25,8 +21,8 @@ joined AS (
         p.avg_close,
         p.avg_volume,
         p.pct_change
-    FROM news n
-    LEFT JOIN prices p
+    FROM raw_news n
+    LEFT JOIN price_windows p
         ON n.ticker = p.ticker AND n.window_start = p.window_start
 ),
 rolling AS (

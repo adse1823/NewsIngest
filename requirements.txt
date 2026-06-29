@@ -1,22 +1,15 @@
-# Broker / Kafka
-confluent-kafka==2.3.0
-fastavro==1.9.4
+# ── Phase 1 (local, no Docker) ─────────────────────────────────────────────
+# Phase 2 additions (Redpanda/Spark) are commented out below
 
-# Stream processing
-pyspark==3.5.1
-
-# Orchestration
-apache-airflow==2.9.1
+# Data ingestion
+newsapi-python==0.2.7
+yfinance>=0.2.50
+pandas==2.2.2
+numpy==1.26.4
+pyarrow==15.0.2
 
 # Feature store
 duckdb==0.10.3
-
-# Data
-yfinance==0.2.40
-newsapi-python==0.2.7
-pandas==2.2.2
-numpy==1.26.4
-pyarrow==16.0.0
 
 # NLP
 transformers==4.41.2
@@ -31,6 +24,7 @@ lightgbm==4.3.0
 scikit-learn==1.5.0
 mlflow==2.13.0
 shap==0.45.0
+matplotlib==3.9.0
 
 # Serving
 fastapi==0.111.0
@@ -38,15 +32,23 @@ uvicorn==0.30.1
 pydantic==2.7.3
 
 # Monitoring
+streamlit==1.35.0
 evidently==0.4.30
 prometheus-client==0.20.0
 
 # Testing
 pytest==8.2.2
 pytest-cov==5.0.0
-great-expectations==0.18.15
 httpx==0.27.0
 
 # Utilities
 python-dotenv==1.0.1
 requests==2.32.3
+
+# ── Phase 2 only (uncomment when adding Redpanda + Spark) ──────────────────
+# confluent-kafka==2.3.0
+# fastavro==1.9.4
+# pyspark==3.5.1
+# apache-airflow==2.9.1
+# prometheus-client==0.20.0
+# great-expectations==0.18.15

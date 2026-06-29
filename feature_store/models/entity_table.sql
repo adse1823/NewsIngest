@@ -1,5 +1,5 @@
 -- Company and sector node table for the knowledge graph
-CREATE TABLE IF NOT EXISTS entity_table AS
+CREATE OR REPLACE TABLE entity_table AS
 SELECT
     ticker,
     CASE
