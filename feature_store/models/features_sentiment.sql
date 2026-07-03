@@ -1,17 +1,27 @@
 -- Window price ticks into 5-minute buckets then join with news windows
 -- This replaces what Spark was doing in Phase 2
 CREATE OR REPLACE TABLE features_sentiment AS
-WITH price_windows AS (
+WITH price_windows_raw AS (
     SELECT
         time_bucket(INTERVAL '5 minutes', to_timestamp(CAST(ts AS DOUBLE) / 1000)) AS window_start,
         ticker,
-        AVG(close)                                    AS avg_close,
-        AVG(volume)                                   AS avg_volume,
-        (LAST(close ORDER BY ts) - FIRST(close ORDER BY ts))
-            / NULLIF(FIRST(close ORDER BY ts), 0) * 100 AS pct_change
+        AVG(close)  AS avg_close,
+        AVG(volume) AS avg_volume
     FROM sqlite_db.price_ticks
     WHERE ticker IS NOT NULL
     GROUP BY window_start, ticker
+),
+price_windows AS (
+    SELECT
+        window_start,
+        ticker,
+        avg_close,
+        avg_volume,
+        -- between-window return: how much did price move vs previous 5-min window
+        (avg_close - LAG(avg_close) OVER (PARTITION BY ticker ORDER BY window_start))
+            / NULLIF(LAG(avg_close) OVER (PARTITION BY ticker ORDER BY window_start), 0) * 100
+            AS pct_change
+    FROM price_windows_raw
 ),
 joined AS (
     SELECT

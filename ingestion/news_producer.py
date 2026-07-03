@@ -12,7 +12,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM", "BAC", "GS"]
-POLL_INTERVAL = 30
+POLL_INTERVAL = 900  # 15 min — 10 tickers × 96 polls/day stays under 100 req/day free limit
 DB_PATH = "./data/raw.db"
 
 
@@ -30,12 +30,13 @@ def init_db(con: sqlite3.Connection):
     """)
     con.execute("CREATE INDEX IF NOT EXISTS idx_news_ticker ON news_raw (ticker)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_news_ts    ON news_raw (ts)")
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_news_url ON news_raw (url) WHERE url IS NOT NULL")
     con.commit()
 
 
 def fetch_articles(client: NewsApiClient, ticker: str) -> list[dict]:
     try:
-        resp = client.get_everything(q=ticker, language="en", page_size=5, sort_by="publishedAt")
+        resp = client.get_everything(q=ticker, language="en", page_size=100, sort_by="publishedAt")
         return resp.get("articles", [])
     except Exception as exc:
         log.warning("NewsAPI error for %s: %s", ticker, exc)
@@ -62,11 +63,12 @@ def insert_articles(con: sqlite3.Connection, ticker: str, articles: list[dict]):
         ))
 
     con.executemany(
-        "INSERT INTO news_raw (title, source, ticker, ts, url, inserted_at) VALUES (?,?,?,?,?,?)",
+        "INSERT OR IGNORE INTO news_raw (title, source, ticker, ts, url, inserted_at) VALUES (?,?,?,?,?,?)",
         rows,
     )
     con.commit()
-    return len(rows)
+    inserted = con.execute("SELECT changes()").fetchone()[0]
+    return inserted
 
 
 def main():

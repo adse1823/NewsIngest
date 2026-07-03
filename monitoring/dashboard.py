@@ -30,17 +30,21 @@ col2.metric("Total price ticks ingested",   f"{price_count:,}")
 # ── Recent headlines per ticker ───────────────────────────────────────────────
 st.subheader("Recent Headlines")
 
-recent_news = pd.read_sql("""
+col_filter, col_limit = st.columns([2, 1])
+ticker_filter = col_filter.selectbox("Filter by ticker", ["All"] + [
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM", "BAC", "GS"
+])
+row_limit = col_limit.number_input("Max rows", min_value=10, max_value=5000, value=200, step=50)
+
+ticker_clause = f"AND ticker = '{ticker_filter}'" if ticker_filter != "All" else ""
+recent_news = pd.read_sql(f"""
     SELECT ticker, title, source,
            datetime(ts / 1000, 'unixepoch') AS published_at
     FROM news_raw
+    WHERE 1=1 {ticker_clause}
     ORDER BY ts DESC
-    LIMIT 50
+    LIMIT {int(row_limit)}
 """, con_sq)
-
-ticker_filter = st.selectbox("Filter by ticker", ["All"] + sorted(recent_news["ticker"].unique().tolist()))
-if ticker_filter != "All":
-    recent_news = recent_news[recent_news["ticker"] == ticker_filter]
 
 st.dataframe(recent_news, use_container_width=True)
 
@@ -74,17 +78,34 @@ if not price_data.empty:
 # ── Feature store stats ───────────────────────────────────────────────────────
 st.subheader("Feature Store")
 
-if os.path.exists(DUCKDB_PATH):
-    con_dq = duckdb.connect(DUCKDB_PATH, read_only=True)
-    tables = con_dq.execute(
-        "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
-    ).df()
-    table_names = tables["table_name"].tolist()
-    st.write("Tables in DuckDB:", table_names)
 
+def query_duckdb(sql: str) -> pd.DataFrame:
+    """Open, query, close — avoids connection conflicts with Streamlit reruns."""
+    con = duckdb.connect(DUCKDB_PATH, read_only=True)
+    try:
+        return con.execute(sql).df()
+    finally:
+        con.close()
+
+
+if not os.path.exists(DUCKDB_PATH):
+    st.info("Feature store not built yet. Run `python feature_store/export.py` first.")
+else:
+    # Get table list
+    try:
+        tables_df = query_duckdb(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
+        )
+        table_names = tables_df["table_name"].tolist()
+        st.write("Tables in DuckDB:", table_names)
+    except Exception as exc:
+        st.error(f"Cannot open feature store: {exc}")
+        table_names = []
+
+    # Features summary
     if "features_sentiment" in table_names:
         try:
-            features = con_dq.execute("""
+            features = query_duckdb("""
                 SELECT ticker,
                        COUNT(*)              AS windows,
                        AVG(rolling_1h_mean)  AS avg_1h_headline_rate,
@@ -92,15 +113,16 @@ if os.path.exists(DUCKDB_PATH):
                 FROM features_sentiment
                 GROUP BY ticker
                 ORDER BY ticker
-            """).df()
+            """)
             st.dataframe(features, use_container_width=True)
         except Exception as exc:
             st.warning(f"Could not load features_sentiment: {exc}")
 
+    # Sentiment scores
     if "sentiment_scores" in table_names:
         st.subheader("Sentiment Scores")
         try:
-            sentiment = con_dq.execute("""
+            sentiment = query_duckdb("""
                 SELECT ticker,
                        ROUND(AVG(pos), 3) AS avg_positive,
                        ROUND(AVG(neg), 3) AS avg_negative,
@@ -108,27 +130,31 @@ if os.path.exists(DUCKDB_PATH):
                 FROM sentiment_scores
                 GROUP BY ticker
                 ORDER BY avg_positive DESC
-            """).df()
-            st.dataframe(sentiment, use_container_width=True)
+            """)
 
-            fig, ax = plt.subplots(figsize=(10, 4))
-            x = range(len(sentiment))
-            ax.bar(x, sentiment["avg_positive"], label="Positive", color="#4CAF50", alpha=0.8)
-            ax.bar(x, sentiment["avg_negative"], label="Negative", color="#F44336", alpha=0.8,
-                   bottom=sentiment["avg_positive"])
-            ax.bar(x, sentiment["avg_neutral"],  label="Neutral",  color="#9E9E9E", alpha=0.8,
-                   bottom=sentiment["avg_positive"] + sentiment["avg_negative"])
-            ax.set_xticks(list(x))
-            ax.set_xticklabels(sentiment["ticker"])
-            ax.set_ylabel("Sentiment proportion")
-            ax.legend()
-            st.pyplot(fig)
+            if sentiment.empty:
+                st.info("sentiment_scores table is empty.")
+            else:
+                st.dataframe(sentiment, use_container_width=True)
+
+                fig, ax = plt.subplots(figsize=(10, 4))
+                x = list(range(len(sentiment)))
+                ax.bar(x, sentiment["avg_positive"], label="Positive", color="#4CAF50", alpha=0.8)
+                ax.bar(x, sentiment["avg_negative"], label="Negative", color="#F44336", alpha=0.8,
+                       bottom=sentiment["avg_positive"])
+                ax.bar(x, sentiment["avg_neutral"],  label="Neutral",  color="#9E9E9E", alpha=0.8,
+                       bottom=sentiment["avg_positive"] + sentiment["avg_negative"])
+                ax.set_xticks(x)
+                ax.set_xticklabels(sentiment["ticker"].tolist(), rotation=45)
+                ax.set_ylabel("Sentiment proportion")
+                ax.set_ylim(0, 1)
+                ax.legend()
+                fig.tight_layout()
+                st.pyplot(fig)
+                plt.close(fig)
+
         except Exception as exc:
-            st.warning(f"Could not load sentiment_scores: {exc}")
-
-    con_dq.close()
-else:
-    st.info("Feature store not built yet. Run `python feature_store/export.py` first.")
+            st.error(f"Could not load sentiment_scores: {exc}")
 
 
 # ── Refresh ───────────────────────────────────────────────────────────────────

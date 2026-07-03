@@ -1,5 +1,6 @@
 import os
 import logging
+from pathlib import Path
 import duckdb
 import numpy as np
 import pandas as pd
@@ -68,7 +69,7 @@ def create_label(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def main():
-    mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000"))
+    mlflow.set_tracking_uri(Path("./mlruns").resolve().as_uri())
     mlflow.set_experiment(MLFLOW_EXPERIMENT)
 
     df = load_features()

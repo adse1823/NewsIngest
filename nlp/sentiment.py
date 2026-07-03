@@ -1,5 +1,6 @@
 import os
 import logging
+import numpy as np
 import duckdb
 import pandas as pd
 import torch
@@ -53,7 +54,11 @@ def main():
 
     records = []
     for _, row in rows.iterrows():
-        titles = row["titles"] if isinstance(row["titles"], list) else []
+        raw = row["titles"]
+        if isinstance(raw, (list, np.ndarray)) and len(raw) > 0:
+            titles = list(dict.fromkeys(str(t) for t in raw))  # deduplicate, preserve order
+        else:
+            titles = []
         if not titles:
             records.append({
                 "window_start": row["window_start"],

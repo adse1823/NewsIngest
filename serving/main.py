@@ -39,7 +39,8 @@ _recent_X: list[list[float]] = []
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000"))
+    from pathlib import Path
+    mlflow.set_tracking_uri(Path("./mlruns").resolve().as_uri())
     model_uri = "models:/fin-platform-lgbm/Production"
     log.info("Loading model from %s", model_uri)
     _state["model"] = mlflow.lightgbm.load_model(model_uri)
@@ -79,7 +80,7 @@ def predict(req: PredictRequest):
     start = time.time()
     try:
         x = build_feature_vector(req)
-        prob = float(_state["model"].predict_proba(x)[0, 1])
+        prob = float(_state["model"].predict(x)[0])
         direction = "up" if prob >= 0.5 else "down"
         _recent_X.append(x[0].tolist())
         if len(_recent_X) > 200:
