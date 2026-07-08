@@ -1,5 +1,7 @@
 # Progress Log
 
+<!-- markdownlint-disable MD024 -->
+
 ## Session 2 — 2 July 2026
 
 ### What Was Fixed / Built
@@ -130,6 +132,79 @@ a 30-day boundary. Not useful until data is collected over at least 30 days.
 2. Migrate MLflow stage API to aliases (fix deprecation warnings)
 3. Run drift report once 30 days of data has accumulated
 4. Consider expanding to S&P 500 tickers via config file
+
+---
+
+## Session 3 — 8 July 2026
+
+### What Was Built
+
+Phase 2 streaming infrastructure started. MLflow deprecated APIs removed. Redpanda dual-write working.
+
+---
+
+### Pipeline Status
+
+| Step | Status | Notes |
+|---|---|---|
+| MLflow aliases migration | Done | Replaced deprecated Stages API with Aliases — model URI now `models:/fin-platform-lgbm@champion` |
+| Redpanda container | Done | Running via Docker on port 29092 |
+| Kafka topics created | Done | `news-raw` and `price-ticks` (1 partition, 1 replica each) |
+| kafka-python installed | Done | v3.0.7 — pure Python, no compiler needed |
+| News producer dual-write | Done | Publishes JSON to `news-raw` keyed by ticker — code written, not yet verified |
+| Price producer dual-write | Done | Publishes JSON to `price-ticks` keyed by ticker — verified via `rpk topic consume` |
+
+---
+
+### Decisions Made
+
+**MLflow aliases over Stages**
+Migrated from deprecated `get_latest_versions` + `transition_model_version_stage` to
+`search_model_versions` + `set_registered_model_alias`. Alias name is `champion` (conventional).
+Model URI changed from `models:/fin-platform-lgbm/Production` to `models:/fin-platform-lgbm@champion`.
+`scripts/set_champion.py` created to backfill alias on existing v8; v9 is now champion.
+
+**Dual-write instead of replacing SQLite**
+Both producers continue writing to SQLite so the Phase 1 pipeline works unchanged. Kafka publish
+is fire-and-forget — failures are logged as warnings but never crash the producer.
+
+**kafka-python over confluent-kafka**
+Pure Python, no C compiler or build tools needed on Windows. `confluent-kafka` is faster but
+requires Confluent's C library which is difficult to install on Windows without WSL2.
+
+**Producers keyed by ticker**
+`producer.send(topic, key=ticker.encode(), value=payload)` guarantees all messages for the same
+ticker land on the same partition. This gives the Spark consumer an ordering guarantee per ticker.
+
+**Phase 2 infrastructure runs in Docker, not WSL2**
+Original plan noted WSL2 for Spark. Decided to run all Phase 2 infrastructure (Redpanda,
+Spark, Airflow, Prometheus, Grafana) as Docker containers instead. Simpler setup, no OS changes.
+
+---
+
+### Bugs Fixed This Session
+
+| Bug | Root Cause | Fix |
+|---|---|---|
+| `AttributeError: 'ModelInfo' has no attribute 'registered_model_version'` | MLflow version installed doesn't expose that attribute | Use `search_model_versions` and pick max version by number |
+| `sqlite3.IntegrityError: UNIQUE constraint failed: price_ticks.ticker, price_ticks.ts` | `insert_tick` used plain `INSERT` — crashes when same candle re-polled within same 1-minute bar | Changed to `INSERT OR IGNORE` |
+
+---
+
+### Data Volume (end of session)
+
+- 2,449+ news rows, 16,420+ price rows in SQLite
+- Model v9 champion — AUC 0.6721
+- `price-ticks` Redpanda topic: 10 messages (1 per ticker, first poll)
+
+---
+
+### Next Session Priorities
+
+1. Verify news producer (`rpk topic consume news-raw --num 5 --offset oldest`)
+2. Bring up Prometheus + Grafana: `docker compose --profile monitoring up -d`
+3. Add Spark to `docker-compose.yml` and submit `streaming/spark_consumer.py`
+4. Add Airflow to `docker-compose.yml`, init DB, mount `dags/`
 
 ---
 

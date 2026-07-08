@@ -126,14 +126,14 @@ def main():
         )
 
         client = mlflow.tracking.MlflowClient()
-        versions = client.get_latest_versions("fin-platform-lgbm", stages=["None"])
-        if versions:
-            client.transition_model_version_stage(
-                name="fin-platform-lgbm",
-                version=versions[0].version,
-                stage="Production",
-            )
-            log.info("Promoted model version %s to Production", versions[0].version)
+        versions = client.search_model_versions("name='fin-platform-lgbm'")
+        latest_version = max(versions, key=lambda v: int(v.version)).version
+        client.set_registered_model_alias(
+            name="fin-platform-lgbm",
+            alias="champion",
+            version=latest_version,
+        )
+        log.info("Set alias 'champion' on model version %s", latest_version)
 
         log.info("Training complete. Mean AUC: %.4f", mean_auc)
 

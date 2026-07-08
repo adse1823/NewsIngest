@@ -1,9 +1,11 @@
 import os
+import json
 import time
 import sqlite3
 import logging
 from datetime import datetime, timezone
 
+from kafka import KafkaProducer
 from newsapi import NewsApiClient
 from dotenv import load_dotenv
 
@@ -14,6 +16,8 @@ log = logging.getLogger(__name__)
 TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM", "BAC", "GS"]
 POLL_INTERVAL = 900  # 15 min — 10 tickers × 96 polls/day stays under 100 req/day free limit
 DB_PATH = "./data/raw.db"
+BROKER = os.getenv("REDPANDA_BROKERS", "localhost:29092")
+TOPIC = "news-raw"
 
 
 def init_db(con: sqlite3.Connection):
@@ -43,9 +47,10 @@ def fetch_articles(client: NewsApiClient, ticker: str) -> list[dict]:
         return []
 
 
-def insert_articles(con: sqlite3.Connection, ticker: str, articles: list[dict]):
+def insert_articles(con: sqlite3.Connection, producer: KafkaProducer, ticker: str, articles: list[dict]):
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     rows = []
+    kafka_payloads = []
     for article in articles:
         ts_str = article.get("publishedAt") or datetime.now(timezone.utc).isoformat()
         try:
@@ -53,14 +58,10 @@ def insert_articles(con: sqlite3.Connection, ticker: str, articles: list[dict]):
         except ValueError:
             ts_ms = now_ms
 
-        rows.append((
-            (article.get("title") or "")[:500],
-            (article.get("source", {}).get("name") or "unknown")[:100],
-            ticker,
-            ts_ms,
-            article.get("url"),
-            now_ms,
-        ))
+        title = (article.get("title") or "")[:500]
+        source = (article.get("source", {}).get("name") or "unknown")[:100]
+        rows.append((title, source, ticker, ts_ms, article.get("url"), now_ms))
+        kafka_payloads.append({"title": title, "source": source, "ticker": ticker, "ts": ts_ms, "url": article.get("url")})
 
     con.executemany(
         "INSERT OR IGNORE INTO news_raw (title, source, ticker, ts, url, inserted_at) VALUES (?,?,?,?,?,?)",
@@ -68,6 +69,14 @@ def insert_articles(con: sqlite3.Connection, ticker: str, articles: list[dict]):
     )
     con.commit()
     inserted = con.execute("SELECT changes()").fetchone()[0]
+
+    for payload in kafka_payloads:
+        try:
+            producer.send(TOPIC, key=ticker.encode(), value=payload)
+        except Exception as exc:
+            log.warning("Kafka publish failed for %s: %s", ticker, exc)
+    producer.flush()
+
     return inserted
 
 
@@ -77,18 +86,22 @@ def main():
     con = sqlite3.connect(DB_PATH)
     init_db(con)
 
-    log.info("News producer started (Phase 1 — writing to SQLite). Polling every %ds.", POLL_INTERVAL)
+    producer = KafkaProducer(
+        bootstrap_servers=BROKER,
+        value_serializer=lambda v: json.dumps(v).encode(),
+    )
+    log.info("News producer started (dual-write: SQLite + Redpanda). Polling every %ds.", POLL_INTERVAL)
 
     while True:
         total = 0
         for ticker in TICKERS:
             articles = fetch_articles(news_client, ticker)
             if articles:
-                count = insert_articles(con, ticker, articles)
+                count = insert_articles(con, producer, ticker, articles)
                 total += count
                 log.debug("Inserted %d articles for %s", count, ticker)
 
-        log.info("Batch complete — %d articles written to %s", total, DB_PATH)
+        log.info("Batch complete — %d articles written to %s + Redpanda", total, DB_PATH)
         time.sleep(POLL_INTERVAL)
 
 

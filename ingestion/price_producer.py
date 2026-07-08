@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import sqlite3
 import logging
@@ -6,6 +7,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import yfinance as yf
+from kafka import KafkaProducer
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -15,6 +17,8 @@ log = logging.getLogger(__name__)
 TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM", "BAC", "GS"]
 POLL_INTERVAL = 30
 DB_PATH = "./data/raw.db"
+BROKER = os.getenv("REDPANDA_BROKERS", "localhost:29092")
+TOPIC = "price-ticks"
 
 
 def init_db(con: sqlite3.Connection):
@@ -61,15 +65,20 @@ def fetch_tick(ticker: str) -> dict | None:
         return None
 
 
-def insert_tick(con: sqlite3.Connection, tick: dict):
+def insert_tick(con: sqlite3.Connection, producer: KafkaProducer, tick: dict):
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     con.execute(
-        """INSERT INTO price_ticks (ticker, open, high, low, close, volume, ts, inserted_at)
+        """INSERT OR IGNORE INTO price_ticks (ticker, open, high, low, close, volume, ts, inserted_at)
            VALUES (?,?,?,?,?,?,?,?)""",
         (tick["ticker"], tick["open"], tick["high"], tick["low"],
          tick["close"], tick["volume"], tick["ts"], now_ms),
     )
     con.commit()
+    try:
+        producer.send(TOPIC, key=tick["ticker"].encode(), value=tick)
+        producer.flush()
+    except Exception as exc:
+        log.warning("Kafka publish failed for %s: %s", tick["ticker"], exc)
 
 
 def main():
@@ -77,18 +86,22 @@ def main():
     con = sqlite3.connect(DB_PATH)
     init_db(con)
 
-    log.info("Price producer started (Phase 1 — writing to SQLite). Polling every %ds.", POLL_INTERVAL)
+    producer = KafkaProducer(
+        bootstrap_servers=BROKER,
+        value_serializer=lambda v: json.dumps(v).encode(),
+    )
+    log.info("Price producer started (dual-write: SQLite + Redpanda). Polling every %ds.", POLL_INTERVAL)
 
     while True:
         total = 0
         for ticker in TICKERS:
             tick = fetch_tick(ticker)
             if tick:
-                insert_tick(con, tick)
+                insert_tick(con, producer, tick)
                 total += 1
                 log.debug("Inserted tick for %s: close=%.2f", ticker, tick["close"])
 
-        log.info("Batch complete — %d ticks written to %s", total, DB_PATH)
+        log.info("Batch complete — %d ticks written to %s + Redpanda", total, DB_PATH)
         time.sleep(POLL_INTERVAL)
 
 

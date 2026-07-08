@@ -41,7 +41,7 @@ _recent_X: list[list[float]] = []
 async def lifespan(app: FastAPI):
     from pathlib import Path
     mlflow.set_tracking_uri(Path("./mlruns").resolve().as_uri())
-    model_uri = "models:/fin-platform-lgbm/Production"
+    model_uri = "models:/fin-platform-lgbm@champion"
     log.info("Loading model from %s", model_uri)
     _state["model"] = mlflow.lightgbm.load_model(model_uri)
     _state["explainer"] = shap.TreeExplainer(_state["model"])

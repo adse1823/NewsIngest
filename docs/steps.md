@@ -106,12 +106,14 @@ Downloads 1 month of 5-minute bars from yfinance. No API key needed.
 python ingestion/news_producer.py
 ```
 Polls NewsAPI every 15 minutes. Inserts only new articles (deduped by URL).
+Also publishes to Redpanda topic `news-raw` if Docker is running.
 
 ### Step 4 — Start live price ingestion (keep running)
 ```powershell
 python ingestion/price_producer.py
 ```
 Polls yfinance every 30 seconds. Writes latest OHLCV tick to SQLite.
+Also publishes to Redpanda topic `price-ticks` if Docker is running.
 
 ### Step 5 — Build features
 ```powershell

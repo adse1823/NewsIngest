@@ -53,14 +53,22 @@ Three signals are combined to make this prediction:
 
 ## Two Phases
 
-### Phase 1 — Local (current)
+### Phase 1 — Local (complete)
 Everything runs inside a Python virtual environment. No Docker, no cloud services required.
 SQLite stores raw data. DuckDB runs feature engineering. Streamlit provides the dashboard.
 
-### Phase 2 — Production (future)
-Replace the SQLite ingestion layer with Redpanda (Kafka-compatible broker) running in WSL2.
-Replace Spark for stream processing. Replace Streamlit with Prometheus + Grafana.
-Everything from the feature store downward stays identical between phases.
+### Phase 2 — Production (in progress)
+Adds a streaming layer on top of Phase 1. Phase 1 pipeline continues to work unchanged.
+Both ingestion producers now dual-write to SQLite and Redpanda simultaneously.
+All Phase 2 infrastructure runs in Docker (no WSL2 required):
+
+| Component | Status | Notes |
+|---|---|---|
+| Redpanda | Done | Running on port 29092. Topics: `news-raw`, `price-ticks` |
+| Producer dual-write | Done | Both producers publish JSON to Redpanda keyed by ticker |
+| Prometheus + Grafana | Pending | Defined in `docker-compose.yml` — `docker compose --profile monitoring up -d` |
+| Spark Structured Streaming | Pending | `streaming/spark_consumer.py` written — needs Spark service in docker-compose |
+| Airflow | Pending | `dags/fin_pipeline.py` written — needs Airflow service in docker-compose |
 
 ---
 
