@@ -4,6 +4,7 @@ import io
 import logging
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Optional
 
 import mlflow
@@ -37,13 +38,29 @@ _state: dict = {}
 _recent_X: list[list[float]] = []
 
 
+MLRUNS_DIR = os.getenv("MLRUNS_DIR", str(Path("./mlruns").resolve()))
+
+
+def _find_artifact(run_id: str, artifact_name: str) -> str:
+    """Scan MLRUNS_DIR for the artifact path, bypassing stored absolute paths."""
+    import glob
+    pattern = os.path.join(MLRUNS_DIR, "*", run_id, "artifacts", artifact_name)
+    matches = glob.glob(pattern)
+    if not matches:
+        raise FileNotFoundError(
+            f"Artifact '{artifact_name}' for run {run_id} not found in {MLRUNS_DIR}"
+        )
+    return matches[0]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from pathlib import Path
-    mlflow.set_tracking_uri(Path("./mlruns").resolve().as_uri())
-    model_uri = "models:/fin-platform-lgbm@champion"
-    log.info("Loading model from %s", model_uri)
-    _state["model"] = mlflow.lightgbm.load_model(model_uri)
+    mlflow.set_tracking_uri(Path(MLRUNS_DIR).resolve().as_uri())
+    client = mlflow.tracking.MlflowClient()
+    version = client.get_model_version_by_alias("fin-platform-lgbm", "champion")
+    model_path = _find_artifact(version.run_id, "model")
+    log.info("Loading champion model (v%s) from %s", version.version, model_path)
+    _state["model"] = mlflow.lightgbm.load_model(model_path)
     _state["explainer"] = shap.TreeExplainer(_state["model"])
     log.info("Model loaded. Ready.")
     yield

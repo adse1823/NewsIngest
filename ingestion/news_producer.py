@@ -47,7 +47,7 @@ def fetch_articles(client: NewsApiClient, ticker: str) -> list[dict]:
         return []
 
 
-def insert_articles(con: sqlite3.Connection, producer: KafkaProducer, ticker: str, articles: list[dict]):
+def insert_articles(con: sqlite3.Connection, producer, ticker: str, articles: list[dict]):
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     rows = []
     kafka_payloads = []
@@ -70,12 +70,12 @@ def insert_articles(con: sqlite3.Connection, producer: KafkaProducer, ticker: st
     con.commit()
     inserted = con.execute("SELECT changes()").fetchone()[0]
 
-    for payload in kafka_payloads:
-        try:
-            producer.send(TOPIC, key=ticker.encode(), value=payload)
-        except Exception as exc:
-            log.warning("Kafka publish failed for %s: %s", ticker, exc)
-    producer.flush()
+    if producer is not None:
+        for payload in kafka_payloads:
+            try:
+                producer.send(TOPIC, key=ticker.encode(), value=payload)
+            except Exception as exc:
+                log.warning("Kafka publish failed for %s: %s", ticker, exc)
 
     return inserted
 
@@ -86,10 +86,15 @@ def main():
     con = sqlite3.connect(DB_PATH)
     init_db(con)
 
-    producer = KafkaProducer(
-        bootstrap_servers=BROKER,
-        value_serializer=lambda v: json.dumps(v).encode(),
-    )
+    try:
+        producer = KafkaProducer(
+            bootstrap_servers=BROKER,
+            value_serializer=lambda v: json.dumps(v).encode(),
+        )
+    except Exception as e:
+        log.warning("Kafka unavailable: %s — running SQLite-only mode", e)
+        producer = None
+
     log.info("News producer started (dual-write: SQLite + Redpanda). Polling every %ds.", POLL_INTERVAL)
 
     while True:
@@ -101,6 +106,8 @@ def main():
                 total += count
                 log.debug("Inserted %d articles for %s", count, ticker)
 
+        if producer is not None:
+            producer.flush()
         log.info("Batch complete — %d articles written to %s + Redpanda", total, DB_PATH)
         time.sleep(POLL_INTERVAL)
 

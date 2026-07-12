@@ -22,37 +22,37 @@ with DAG(
 
     feature_export = BashOperator(
         task_id="feature_export",
-        bash_command="cd /opt/airflow && python feature_store/export.py",
+        bash_command="cd /opt/airflow/project && python feature_store/export.py",
     )
 
     nlp_sentiment = BashOperator(
         task_id="nlp_sentiment",
-        bash_command="cd /opt/airflow && python nlp/sentiment.py",
+        bash_command="cd /opt/airflow/project && python nlp/sentiment.py",
     )
 
     nlp_embeddings = BashOperator(
         task_id="nlp_embeddings",
-        bash_command="cd /opt/airflow && python nlp/embeddings.py",
+        bash_command="cd /opt/airflow/project && python nlp/embeddings.py",
     )
 
     build_graph = BashOperator(
         task_id="build_graph",
-        bash_command="cd /opt/airflow && python graph/build_graph.py",
+        bash_command="cd /opt/airflow/project && python graph/build_graph.py",
     )
 
     train_gnn = BashOperator(
         task_id="train_gnn",
-        bash_command="cd /opt/airflow && python graph/train_gnn.py",
+        bash_command="cd /opt/airflow/project && python graph/train_gnn.py",
     )
 
     train_model = BashOperator(
         task_id="train_model",
-        bash_command="cd /opt/airflow && python modeling/train.py",
+        bash_command="cd /opt/airflow/project && python modeling/train.py",
     )
 
     drift_report = BashOperator(
         task_id="drift_report",
-        bash_command="cd /opt/airflow && python monitoring/drift_report.py",
+        bash_command="cd /opt/airflow/project && python monitoring/drift_report.py",
     )
 
     feature_export >> nlp_sentiment >> nlp_embeddings >> build_graph >> train_gnn >> train_model >> drift_report
