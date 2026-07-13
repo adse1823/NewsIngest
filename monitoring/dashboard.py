@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import streamlit as st
+import streamlit.components.v1 as components
 
 SQLITE_PATH = os.getenv("SQLITE_PATH", "./data/raw.db")
 DUCKDB_PATH = os.getenv("FEATURE_STORE_PATH", "./data/feature_store.duckdb")
@@ -170,10 +171,20 @@ sent = df[["window_start", "pos", "neg", "neu"]].dropna(subset=["pos"]).set_inde
 if sent.empty:
     st.info("No sentiment data in this range. Run `python nlp/sentiment.py` first.")
 else:
-    # Resample to hourly so the chart isn't too dense
+    cb1, cb2, cb3 = st.columns(3)
+    show_pos = cb1.checkbox("Positive", value=True)
+    show_neg = cb2.checkbox("Negative", value=True)
+    show_neu = cb3.checkbox("Neutral",  value=True)
+
+    cols_to_plot   = [c for c, show in [("pos", show_pos), ("neg", show_neg), ("neu", show_neu)] if show]
+    colors_to_plot = [c for c, show in [("#22c55e", show_pos), ("#ef4444", show_neg), ("#94a3b8", show_neu)] if show]
+
     sent_h = sent.resample("1h").mean().dropna(how="all")
-    st.line_chart(sent_h, color=["#22c55e", "#ef4444", "#94a3b8"],
-                  use_container_width=True)
+
+    if cols_to_plot:
+        st.line_chart(sent_h[cols_to_plot], color=colors_to_plot, use_container_width=True)
+    else:
+        st.info("Select at least one sentiment to display.")
     st.caption("Hourly mean of pos / neg / neu scores (FinBERT)")
 
 
@@ -184,7 +195,7 @@ st.subheader("Headline volume")
 vol = df[["window_start", "headline_count"]].dropna().set_index("window_start")
 if not vol.empty:
     vol_h = vol.resample("1h").sum()
-    st.bar_chart(vol_h, use_container_width=True)
+    st.line_chart(vol_h, use_container_width=True)
     st.caption("Total headlines per hour (all 5-min windows summed)")
 
 
@@ -301,9 +312,9 @@ else:
 
 if Path(DRIFT_REPORT).exists():
     st.subheader("Data drift report (Evidently)")
-    with open(DRIFT_REPORT) as f:
+    with open(DRIFT_REPORT, encoding="utf-8") as f:
         html = f.read()
-    st.components.v1.html(html, height=600, scrolling=True)
+    components.html(html, height=600, scrolling=True)
 else:
     with st.expander("Drift report"):
         st.info(

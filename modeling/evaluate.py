@@ -19,8 +19,9 @@ GNN_PATH = "./data/gnn_embeddings.parquet"
 
 
 def load_production_model():
-    mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000"))
-    model_uri = "models:/fin-platform-lgbm/Production"
+    from pathlib import Path
+    mlflow.set_tracking_uri(Path(os.getenv("MLRUNS_DIR", "./mlruns")).resolve().as_uri())
+    model_uri = "models:/fin-platform-lgbm@champion"
     return mlflow.lightgbm.load_model(model_uri)
 
 

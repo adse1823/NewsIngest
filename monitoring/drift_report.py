@@ -1,4 +1,5 @@
 import os
+import sys
 import logging
 import subprocess
 import duckdb
@@ -14,7 +15,7 @@ log = logging.getLogger(__name__)
 DB_PATH = "./data/feature_store.duckdb"
 DRIFT_THRESHOLD = 0.30
 FEATURE_COLS = ["rolling_1h_mean", "rolling_24h_std", "volume_zscore", "pos", "neg", "neu"]
-REFERENCE_DAYS = 30
+REFERENCE_DAYS = 14
 
 
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -45,7 +46,7 @@ def compute_drift(reference: pd.DataFrame, current: pd.DataFrame) -> float:
 
 def trigger_retrain():
     log.info("Drift threshold exceeded — triggering retrain.")
-    subprocess.run(["python", "modeling/train.py"], check=True)
+    subprocess.run([sys.executable, "modeling/train.py"], check=True)
 
 
 def main():
