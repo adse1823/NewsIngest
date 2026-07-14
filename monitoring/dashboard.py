@@ -1,3 +1,5 @@
+import glob
+import io
 import os
 import sqlite3
 from pathlib import Path
@@ -6,6 +8,8 @@ from datetime import datetime, timezone
 import duckdb
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import streamlit as st
 import streamlit.components.v1 as components
@@ -95,6 +99,81 @@ def get_champion_info() -> dict | None:
         }
     except Exception:
         return None
+
+
+GNN_EMBEDDINGS_PATH = "./data/gnn_embeddings.parquet"
+FEATURE_COLS = (
+    ["rolling_1h_mean", "rolling_24h_std", "volume_zscore", "pos", "neg", "neu"]
+    + [f"gnn_dim_{i}" for i in range(64)]
+)
+
+
+def _find_artifact(run_id: str, artifact_name: str) -> str:
+    pattern = os.path.join(MLRUNS_DIR, "*", run_id, "artifacts", artifact_name)
+    matches = glob.glob(pattern)
+    if not matches:
+        raise FileNotFoundError(f"Artifact '{artifact_name}' not found for run {run_id}")
+    return matches[0]
+
+
+@st.cache_resource
+def load_model_and_explainer():
+    try:
+        import mlflow
+        import mlflow.lightgbm
+        import shap
+        mlflow.set_tracking_uri(Path(MLRUNS_DIR).resolve().as_uri())
+        client = mlflow.tracking.MlflowClient()
+        v = client.get_model_version_by_alias("fin-platform-lgbm", "champion")
+        model_path = _find_artifact(v.run_id, "model")
+        model = mlflow.lightgbm.load_model(model_path)
+        explainer = shap.TreeExplainer(model)
+        return model, explainer
+    except Exception as exc:
+        return None, str(exc)
+
+
+@st.cache_data(ttl=300)
+def latest_features_for_ticker(ticker: str) -> dict | None:
+    try:
+        row = duckdb_query("""
+            SELECT f.rolling_1h_mean, f.rolling_24h_std, f.volume_zscore,
+                   s.pos, s.neg, s.neu
+            FROM features_sentiment f
+            LEFT JOIN sentiment_scores s USING (window_start, ticker)
+            WHERE f.ticker = ?
+            ORDER BY f.window_start DESC
+            LIMIT 1
+        """, [ticker])
+        if row.empty:
+            return None
+        return row.iloc[0].to_dict()
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=600)
+def gnn_dims_for_ticker(ticker: str) -> list[float]:
+    try:
+        if not Path(GNN_EMBEDDINGS_PATH).exists():
+            return [0.0] * 64
+        df = pd.read_parquet(GNN_EMBEDDINGS_PATH)
+        row = df[df["ticker"] == ticker]
+        if row.empty:
+            return [0.0] * 64
+        dim_cols = [c for c in df.columns if c.startswith("dim_")]
+        return row.iloc[0][dim_cols].tolist()[:64]
+    except Exception:
+        return [0.0] * 64
+
+
+def build_feature_vector(feats: dict, gnn: list[float]) -> np.ndarray:
+    gnn = list(gnn) + [0.0] * 64
+    return np.array(
+        [feats["rolling_1h_mean"], feats["rolling_24h_std"], feats["volume_zscore"],
+         feats["pos"], feats["neg"], feats["neu"]] + gnn[:64],
+        dtype=np.float32,
+    ).reshape(1, -1)
 
 
 # ── sidebar ───────────────────────────────────────────────────────────────────
@@ -300,12 +379,88 @@ if champ:
     m3.metric("Features", champ["n_features"] or "—")
     m4.metric("Registered", champ["created"])
     st.caption(f"Run ID prefix: {champ['run_id']}…  |  Registry: fin-platform-lgbm@champion")
-    st.caption("Predict endpoint: `POST http://localhost:8000/predict`")
 else:
     st.warning(
         "No champion model found. "
         "Run `python run_pipeline.py --skip-backfill` to train one."
     )
+
+
+# ── predictions ───────────────────────────────────────────────────────────────
+
+st.subheader("Predict price direction")
+
+_model_result = load_model_and_explainer()
+model, explainer = _model_result
+
+if model is None:
+    st.warning(f"Model not loaded: {explainer}")
+else:
+    import shap
+
+    latest = latest_features_for_ticker(ticker)
+    defaults = latest if latest else {
+        "rolling_1h_mean": 0.0, "rolling_24h_std": 0.0, "volume_zscore": 0.0,
+        "pos": 0.33, "neg": 0.33, "neu": 0.34,
+    }
+
+    with st.form("predict_form"):
+        st.caption(
+            f"Auto-filled from latest feature window for **{ticker}**."
+            if latest else "No feature data yet — enter values manually."
+        )
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            rolling_1h  = st.number_input("rolling_1h_mean",  value=float(defaults["rolling_1h_mean"] or 0), format="%.4f")
+            rolling_24h = st.number_input("rolling_24h_std",  value=float(defaults["rolling_24h_std"] or 0), format="%.4f")
+            vol_z       = st.number_input("volume_zscore",    value=float(defaults["volume_zscore"] or 0),   format="%.4f")
+        with col2:
+            pos = st.slider("pos (positive sentiment)", 0.0, 1.0, float(defaults["pos"] or 0.33), 0.01)
+            neg = st.slider("neg (negative sentiment)", 0.0, 1.0, float(defaults["neg"] or 0.33), 0.01)
+            neu = st.slider("neu (neutral sentiment)",  0.0, 1.0, float(defaults["neu"] or 0.34), 0.01)
+        with col3:
+            st.caption("GNN dims")
+            st.caption("Auto-loaded from gnn_embeddings.parquet")
+            use_gnn = st.checkbox("Use GNN embeddings", value=True)
+
+        submitted = st.form_submit_button("Predict", type="primary", use_container_width=True)
+
+    if submitted:
+        gnn = gnn_dims_for_ticker(ticker) if use_gnn else [0.0] * 64
+        feats = {
+            "rolling_1h_mean": rolling_1h, "rolling_24h_std": rolling_24h,
+            "volume_zscore": vol_z, "pos": pos, "neg": neg, "neu": neu,
+        }
+        x = build_feature_vector(feats, gnn)
+        prob = float(model.predict(x)[0])
+        direction = "up" if prob >= 0.5 else "down"
+        confidence = prob if direction == "up" else 1 - prob
+
+        r1, r2 = st.columns(2)
+        r1.metric(
+            "Direction",
+            f"▲ UP" if direction == "up" else f"▼ DOWN",
+            delta=f"{confidence:.1%} confidence",
+            delta_color="normal" if direction == "up" else "inverse",
+        )
+        r2.metric("Raw probability (up)", f"{prob:.4f}")
+
+        with st.expander("SHAP feature importance"):
+            shap_vals = explainer.shap_values(x)
+            if isinstance(shap_vals, list):
+                shap_vals = shap_vals[1]
+            shap_series = pd.Series(shap_vals[0], index=FEATURE_COLS)
+            top = shap_series.abs().nlargest(15).index
+            fig, ax = plt.subplots(figsize=(8, 4))
+            colors = ["#22c55e" if v > 0 else "#ef4444" for v in shap_series[top]]
+            shap_series[top].sort_values().plot(kind="barh", ax=ax, color=colors[::-1])
+            ax.axvline(0, color="black", linewidth=0.8)
+            ax.set_xlabel("SHAP value (impact on prediction)")
+            ax.set_title(f"Top feature contributions — {ticker}")
+            fig.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+            st.caption("Green = pushes toward UP, Red = pushes toward DOWN")
 
 
 # ── drift report ──────────────────────────────────────────────────────────────
