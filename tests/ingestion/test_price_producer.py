@@ -25,6 +25,8 @@ def _load_price_producer():
 
 PP = _load_price_producer()
 
+NO_AVRO = (None, None)  # schema, schema_id — safe when producer is None
+
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
@@ -64,21 +66,22 @@ def test_init_db_creates_table_and_indexes():
 # ── tests: insert_tick ────────────────────────────────────────────────────────
 
 def test_insert_tick_writes_correct_values_to_db(con):
-    PP.insert_tick(con, None, TICK)
+    PP.insert_tick(con, None, *NO_AVRO, TICK)
     row = con.execute("SELECT ticker, open, high, low, close, volume FROM price_ticks").fetchone()
     assert row == ("AAPL", 150.0, 155.0, 148.0, 153.0, 1_000_000)
 
 
 def test_insert_tick_sends_to_kafka_with_ticker_key(con):
     producer = MagicMock()
-    PP.insert_tick(con, producer, TICK)
+    with patch.object(PP, "_serialize", return_value=b"avro"):
+        PP.insert_tick(con, producer, MagicMock(), 1, TICK)
     producer.send.assert_called_once()
     _, kwargs = producer.send.call_args
     assert kwargs["key"] == b"AAPL"
 
 
 def test_insert_tick_skips_kafka_when_producer_none(con):
-    PP.insert_tick(con, None, TICK)  # must not raise
+    PP.insert_tick(con, None, *NO_AVRO, TICK)  # must not raise
     count = con.execute("SELECT COUNT(*) FROM price_ticks").fetchone()[0]
     assert count == 1
 
@@ -86,8 +89,8 @@ def test_insert_tick_skips_kafka_when_producer_none(con):
 def test_insert_tick_kafka_error_does_not_raise(con):
     producer = MagicMock()
     producer.send.side_effect = Exception("broker down")
-    PP.insert_tick(con, producer, TICK)  # must not raise
-    # DB write still completed
+    with patch.object(PP, "_serialize", return_value=b"avro"):
+        PP.insert_tick(con, producer, MagicMock(), 1, TICK)  # must not raise
     count = con.execute("SELECT COUNT(*) FROM price_ticks").fetchone()[0]
     assert count == 1
 

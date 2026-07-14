@@ -59,6 +59,31 @@ services:
     profiles:
       - spark
 
+  spark-streaming:
+    image: apache/spark:3.5.0
+    container_name: spark-streaming
+    command:
+      - /opt/spark/bin/spark-submit
+      - --master
+      - spark://spark-master:7077
+      - --conf
+      - spark.jars.ivy=/tmp/.ivy2
+      - --packages
+      - org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,org.apache.spark:spark-avro_2.12:3.5.1
+      - /opt/spark-app/streaming/spark_consumer.py
+    environment:
+      - REDPANDA_BROKERS=redpanda:9092
+      - SCHEMA_REGISTRY_URL=http://redpanda:8081
+      - CHECKPOINT_DIR=/opt/spark-app/data/checkpoints
+    depends_on:
+      - spark-master
+      - redpanda
+    volumes:
+      - .:/opt/spark-app
+      - spark-ivy:/tmp/.ivy2
+    profiles:
+      - spark
+
   serving-api:
     build:
       context: .
@@ -153,6 +178,8 @@ services:
       - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
       - grafana-storage:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboard.json:/var/lib/grafana/dashboards/fin-platform.json
     depends_on:
       - prometheus
     profiles:

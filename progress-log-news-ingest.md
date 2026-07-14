@@ -2,6 +2,37 @@
 
 ---
 
+### 2026-07-13 — Session: Spark merge, Grafana provisioning, Avro registration
+
+**What was built / changed**
+
+#### Feature export — Spark streaming integration
+- `feature_store/export.py`: Full rewrite. Now builds `raw_news` and `price_windows_merged` tables directly in Python before running SQL models. If Spark-produced parquet files exist in `./data/windowed/news/` or `./data/windowed/prices/`, rows are merged via UNION (SQLite rows take priority; Spark rows fill in any windows not already covered). Falls back to SQLite-only when Spark hasn't run. The `_has_parquet()` helper checks for actual `.parquet` files so there's no crash on an empty/missing dir.
+- `feature_store/models/features_sentiment.sql`: Removed the `price_windows_raw` CTE that read directly from `sqlite_db.price_ticks` — now reads from `price_windows_merged` (pre-created by export.py). This decouples the SQL from the data source.
+- `feature_store/models/raw_news.sql`: No longer invoked (replaced by inline Python in export.py). File kept for reference.
+- Pipeline order is now: build merged sources → `features_sentiment.sql` → `entity_table.sql` → parquet export.
+
+#### Grafana — auto-provisioning
+- `monitoring/grafana/provisioning/datasources/prometheus.yml`: Datasource config — wires Prometheus at `http://prometheus:9090` with uid `prometheus`.
+- `monitoring/grafana/provisioning/dashboards/dashboard.yml`: Dashboard provider config — points Grafana at `/var/lib/grafana/dashboards` and polls for changes every 30s.
+- `monitoring/grafana/dashboard.json`: Added `datasource` field to all 4 panels (required by Grafana 10.x provisioning).
+- `docker-compose.yml`: Added two volume mounts to grafana service — provisioning dir and dashboard JSON. Dashboard now loads automatically on `docker compose --profile monitoring up`.
+
+#### Avro schema registration
+- `scripts/register_schemas.py`: New script. POSTs `schemas/news_event_v1.avsc` → `news-raw-value` and `schemas/price_tick_v1.avsc` → `price-ticks-value` to the Redpanda Schema Registry. Skips subjects that already exist (use `--force` to re-register). Exits non-zero on any failure. Run once after `docker compose up redpanda` before starting producers.
+
+**Bugs avoided / design decisions**
+- Spark windowed parquet uses `window_start` as a datetime column; DuckDB's `read_parquet()` handles this natively.
+- UNION deduplication uses `WHERE (ticker, window_start) NOT IN (SELECT ...)` — correct for 5-min buckets since each (ticker, window) is unique per source.
+- Grafana 10.x requires `datasource` object (not string) in panel targets — fixed in dashboard.json.
+
+**Suggested next steps**
+1. Switch producers from JSON to Avro serialization (use `fastavro` + Confluent magic bytes prefix, update `spark_consumer.py` to deserialize Avro instead of `from_json`)
+2. Add `spark_consumer` as a Docker Compose service under the `spark` profile so it starts with `docker compose --profile spark up`
+3. End-to-end smoke test: run producers → Spark consumer → export.py → confirm Spark rows appear in `features_export.parquet`
+
+---
+
 ### 2026-07-12 — Session: Pipeline hardening + full test suite
 
 **What was built / changed**

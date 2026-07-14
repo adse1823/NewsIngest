@@ -2,7 +2,7 @@ import importlib.util
 import sqlite3
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -22,6 +22,9 @@ def _load_news_producer():
 
 
 NP = _load_news_producer()
+
+# Shorthand: schema args used when producer is None (never touched by _serialize)
+NO_AVRO = (None, None)  # schema, schema_id
 
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
@@ -68,28 +71,29 @@ def test_init_db_creates_table_and_indexes():
 # ── tests: insert_articles ────────────────────────────────────────────────────
 
 def test_insert_articles_writes_rows_to_db(con):
-    NP.insert_articles(con, None, "AAPL", ARTICLES)
+    NP.insert_articles(con, None, *NO_AVRO, "AAPL", ARTICLES)
     count = con.execute("SELECT COUNT(*) FROM news_raw").fetchone()[0]
     assert count == 2
 
 
 def test_insert_articles_deduplicates_by_url(con):
-    NP.insert_articles(con, None, "AAPL", ARTICLES[:1])
-    NP.insert_articles(con, None, "AAPL", ARTICLES[:1])  # same URL second time
+    NP.insert_articles(con, None, *NO_AVRO, "AAPL", ARTICLES[:1])
+    NP.insert_articles(con, None, *NO_AVRO, "AAPL", ARTICLES[:1])  # same URL second time
     count = con.execute("SELECT COUNT(*) FROM news_raw").fetchone()[0]
     assert count == 1
 
 
 def test_insert_articles_sends_to_kafka_for_each_article(con):
     producer = MagicMock()
-    NP.insert_articles(con, producer, "AAPL", ARTICLES)
+    with patch.object(NP, "_serialize", return_value=b"avro"):
+        NP.insert_articles(con, producer, MagicMock(), 1, "AAPL", ARTICLES)
     assert producer.send.call_count == len(ARTICLES)
     _, kwargs = producer.send.call_args
     assert kwargs["key"] == b"AAPL"
 
 
 def test_insert_articles_skips_kafka_when_producer_none(con):
-    NP.insert_articles(con, None, "AAPL", ARTICLES)  # must not raise
+    NP.insert_articles(con, None, *NO_AVRO, "AAPL", ARTICLES)  # must not raise
     count = con.execute("SELECT COUNT(*) FROM news_raw").fetchone()[0]
     assert count == 2
 
@@ -97,15 +101,15 @@ def test_insert_articles_skips_kafka_when_producer_none(con):
 def test_insert_articles_kafka_error_does_not_raise(con):
     producer = MagicMock()
     producer.send.side_effect = Exception("broker down")
-    NP.insert_articles(con, producer, "AAPL", ARTICLES)  # must not raise
-    # DB write still completed despite Kafka failure
+    with patch.object(NP, "_serialize", return_value=b"avro"):
+        NP.insert_articles(con, producer, MagicMock(), 1, "AAPL", ARTICLES)  # must not raise
     count = con.execute("SELECT COUNT(*) FROM news_raw").fetchone()[0]
     assert count == 2
 
 
 def test_insert_articles_handles_missing_published_at(con):
     article = {"title": "Test", "source": {"name": "Test"}, "url": "https://example.com/3"}
-    NP.insert_articles(con, None, "AAPL", [article])  # must not raise
+    NP.insert_articles(con, None, *NO_AVRO, "AAPL", [article])  # must not raise
     count = con.execute("SELECT COUNT(*) FROM news_raw").fetchone()[0]
     assert count == 1
 
@@ -117,7 +121,7 @@ def test_insert_articles_truncates_long_title(con):
         "publishedAt": "2024-01-15T10:00:00Z",
         "url": "https://example.com/long",
     }
-    NP.insert_articles(con, None, "AAPL", [article])
+    NP.insert_articles(con, None, *NO_AVRO, "AAPL", [article])
     title = con.execute("SELECT title FROM news_raw").fetchone()[0]
     assert len(title) == 500
 
@@ -131,12 +135,11 @@ def test_fetch_articles_returns_empty_on_api_error():
 
 
 def test_insert_articles_null_url_articles_both_inserted(con):
-    # Partial index (WHERE url IS NOT NULL) must not deduplicate NULL-url rows
     articles = [
         {"title": "A", "source": {"name": "X"}, "publishedAt": "2024-01-15T10:00:00Z", "url": None},
         {"title": "B", "source": {"name": "X"}, "publishedAt": "2024-01-15T11:00:00Z", "url": None},
     ]
-    NP.insert_articles(con, None, "AAPL", articles)
+    NP.insert_articles(con, None, *NO_AVRO, "AAPL", articles)
     count = con.execute("SELECT COUNT(*) FROM news_raw").fetchone()[0]
     assert count == 2
 
@@ -148,6 +151,6 @@ def test_insert_articles_invalid_published_at_falls_back_to_now(con):
         "publishedAt": "not-a-date",
         "url": "https://example.com/baddate",
     }
-    NP.insert_articles(con, None, "AAPL", [article])  # must not raise
+    NP.insert_articles(con, None, *NO_AVRO, "AAPL", [article])  # must not raise
     count = con.execute("SELECT COUNT(*) FROM news_raw").fetchone()[0]
     assert count == 1
