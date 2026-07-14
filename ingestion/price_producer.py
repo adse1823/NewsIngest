@@ -18,7 +18,9 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-TICKERS       = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM", "BAC", "GS"]
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(__file__))
+from tickers import TICKERS
 POLL_INTERVAL = 30
 DB_PATH       = "./data/raw.db"
 BROKER        = os.getenv("REDPANDA_BROKERS", "localhost:29092")

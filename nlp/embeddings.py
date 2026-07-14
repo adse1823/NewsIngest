@@ -1,4 +1,5 @@
 import os
+import sys
 import logging
 import duckdb
 import numpy as np
@@ -8,11 +9,13 @@ from transformers import AutoTokenizer, AutoModel
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "ingestion"))
+from tickers import TICKERS
+
 MODEL_NAME = "ProsusAI/finbert"
 BATCH_SIZE = 8
 DB_PATH = "./data/feature_store.duckdb"
 OUTPUT_PATH = "./data/headline_embeddings.npy"
-TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM", "BAC", "GS"]
 
 
 def load_model():

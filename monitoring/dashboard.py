@@ -14,12 +14,14 @@ import matplotlib.pyplot as plt
 import streamlit as st
 import streamlit.components.v1 as components
 
+import sys as _sys
+_sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "ingestion"))
+from tickers import TICKERS, SECTOR_MAP
+
 SQLITE_PATH = os.getenv("SQLITE_PATH", "./data/raw.db")
 DUCKDB_PATH = os.getenv("FEATURE_STORE_PATH", "./data/feature_store.duckdb")
 DRIFT_REPORT = "./data/drift_report.html"
 MLRUNS_DIR = os.getenv("MLRUNS_DIR", "./mlruns")
-
-TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM", "BAC", "GS"]
 
 st.set_page_config(
     page_title="FinPlatform Dashboard",

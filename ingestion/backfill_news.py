@@ -27,7 +27,9 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM", "BAC", "GS"]
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.dirname(__file__))
+from tickers import TICKERS
 DB_PATH = "./data/raw.db"
 
 

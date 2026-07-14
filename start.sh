@@ -16,6 +16,12 @@ echo "      Waiting for Redpanda Kafka port (29092)..."
 until $PYTHON -c "import socket; socket.create_connection(('localhost', 29092), timeout=2).close()" 2>/dev/null; do
   sleep 2
 done
+echo "      Kafka port ready."
+
+echo "      Waiting for Schema Registry port (8081)..."
+until $PYTHON -c "import socket; socket.create_connection(('localhost', 8081), timeout=2).close()" 2>/dev/null; do
+  sleep 2
+done
 echo "      Redpanda ready."
 
 # ── 2. Schema registration ─────────────────────────────
