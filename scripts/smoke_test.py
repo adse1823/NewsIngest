@@ -19,6 +19,10 @@ import subprocess
 import sys
 import time
 
+# ensure Unicode output works on Windows cp1252 consoles
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 WIDTH = 50
 PYTHON = sys.executable
 ROOT   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
