@@ -19,8 +19,12 @@ log = logging.getLogger(__name__)
 
 import sys as _sys
 _sys.path.insert(0, os.path.dirname(__file__))
-from tickers import TICKERS
-POLL_INTERVAL = 900
+# Free tier = 100 requests/day. Full TICKERS list (300+) exhausts it in one poll.
+# Live polling covers only these 10; all other tickers are seeded via synthetic_news.py.
+LIVE_TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "JPM", "XOM", "JNJ"]
+
+# 10 tickers × 6 polls/day = 60 requests/day (safe under 100 limit)
+POLL_INTERVAL = 14400
 DB_PATH       = "./data/raw.db"
 BROKER        = os.getenv("REDPANDA_BROKERS", "localhost:29092")
 REGISTRY_URL  = os.getenv("SCHEMA_REGISTRY_URL", "http://localhost:8081")
@@ -130,7 +134,7 @@ def main():
 
     while True:
         total = 0
-        for ticker in TICKERS:
+        for ticker in LIVE_TICKERS:
             articles = fetch_articles(news_client, ticker)
             if articles:
                 count = insert_articles(con, producer, schema, schema_id, ticker, articles)

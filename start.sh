@@ -9,7 +9,7 @@ echo "=================================================="
 
 # ── 1. Redpanda ────────────────────────────────────────
 echo ""
-echo "[1/5] Starting Redpanda..."
+echo "[1/8] Starting Redpanda..."
 docker compose up -d redpanda
 
 echo "      Waiting for Redpanda Kafka port (29092)..."
@@ -26,12 +26,12 @@ echo "      Redpanda ready."
 
 # ── 2. Schema registration ─────────────────────────────
 echo ""
-echo "[2/5] Registering Avro schemas..."
+echo "[2/8] Registering Avro schemas..."
 $PYTHON scripts/register_schemas.py
 
-# ── 3. Backfill (skip if data already exists) ──────────
+# ── 3. Backfill + synthetic seed ───────────────────────
 echo ""
-echo "[3/5] Checking database..."
+echo "[3/8] Checking database..."
 ROW_COUNT=$($PYTHON -c "
 import sqlite3, os
 db = './data/raw.db'
@@ -51,28 +51,66 @@ else
   $PYTHON ingestion/backfill_prices.py
 fi
 
-# ── 4. Smoke test ──────────────────────────────────────
+echo "      Seeding synthetic news for non-live tickers..."
+$PYTHON ingestion/synthetic_news.py
+
+# ── 4. ML pipeline ─────────────────────────────────────
 echo ""
-echo "[4/5] Running smoke test..."
+echo "[4/8] Running ML pipeline..."
+if [ -f "./data/features_export.parquet" ] && [ -f "./data/gnn_embeddings.parquet" ]; then
+  echo "      Features and embeddings already exist — skipping slow steps."
+  $PYTHON run_pipeline.py --skip-backfill --skip-sentiment --skip-embeddings --skip-graph --skip-gnn
+else
+  echo "      First run — building features, running FinBERT, training GNN (~8 min)..."
+  $PYTHON run_pipeline.py --skip-backfill
+fi
+echo "      Pipeline complete."
+
+# ── 5. Smoke test ──────────────────────────────────────
+echo ""
+echo "[5/8] Running smoke test..."
 $PYTHON scripts/smoke_test.py --skip-train
 echo "      Smoke test passed."
 
-# ── 5. Start services ──────────────────────────────────
+# ── 6. Start Docker services ───────────────────────────
 echo ""
-echo "[5/5] Starting monitoring stack + Spark..."
-docker compose --profile monitoring --profile spark up -d
+echo "[6/8] Starting monitoring + Airflow..."
+docker compose --profile monitoring --profile airflow up -d
+
+# ── 7. Start API + MLflow in background ────────────────
+echo ""
+echo "[7/8] Starting prediction API..."
+$PYTHON -m uvicorn serving.main:app --port 8000 &
+API_PID=$!
+
+echo "      Waiting for API on port 8000..."
+until $PYTHON -c "import socket; socket.create_connection(('localhost', 8000), timeout=2).close()" 2>/dev/null; do
+  sleep 2
+done
+echo "      API ready (PID $API_PID)."
+
+# ── 8. Streamlit + MLflow UI ───────────────────────────
+echo ""
+echo "[8/8] Starting MLflow UI and Streamlit dashboard..."
+$PYTHON -m mlflow ui --port 5000 --backend-store-uri ./mlruns &
+MLFLOW_PID=$!
+
+$PYTHON -m streamlit run monitoring/dashboard.py --server.port 8501 &
+STREAMLIT_PID=$!
 
 echo ""
 echo "=================================================="
 echo "  All services started."
 echo ""
-echo "  Streamlit dashboard:"
-echo "    $PYTHON -m streamlit run monitoring/dashboard.py"
+echo "  Streamlit dashboard: http://localhost:8501"
+echo "  Prediction API:      http://localhost:8000/docs"
+echo "  Grafana:             http://localhost:3000  (admin / admin)"
+echo "  Prometheus:          http://localhost:9090"
+echo "  Airflow:             http://localhost:8888  (admin / admin)"
+echo "  MLflow:              http://localhost:5000"
 echo ""
-echo "  Prediction API:"
-echo "    $PYTHON -m uvicorn serving.main:app --port 8000"
-echo ""
-echo "  Grafana:    http://localhost:3000  (admin / admin)"
-echo "  Prometheus: http://localhost:9090"
-echo "  Spark UI:   http://localhost:8080"
+echo "  PIDs — API: $API_PID  MLflow: $MLFLOW_PID  Streamlit: $STREAMLIT_PID"
+echo "  To stop: kill $API_PID $MLFLOW_PID $STREAMLIT_PID"
 echo "=================================================="
+
+wait
