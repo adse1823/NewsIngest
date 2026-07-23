@@ -45,11 +45,11 @@ An end-to-end production ML system for real-time financial sentiment analysis an
 │               Redpanda (Kafka-compatible broker)                    │
 │         Topic: news-raw              Topic: price-ticks             │
 │                                                                     │
-│         ┌─────────────────────────────────────┐                    │
-│         │     Schema Registry (port 8081)      │                    │
-│         │  Avro schemas · compatibility rules  │                    │
-│         │  news_event_v1  ·  price_tick_v1     │                    │
-│         └─────────────────────────────────────┘                    │
+│         ┌─────────────────────────────────────┐                     │
+│         │     Schema Registry (port 8081)     │                     │
+│         │  Avro schemas · compatibility rules │                     │
+│         │  news_event_v1  ·  price_tick_v1    │                     │
+│         └─────────────────────────────────────┘                     │
 │          Producers validate before publish                          │
 │          Consumers deserialize automatically                        │
 └────────────────────────────┬────────────────────────────────────────┘
@@ -58,16 +58,16 @@ An end-to-end production ML system for real-time financial sentiment analysis an
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    STREAM PROCESSING                                │
 │              Apache Spark Structured Streaming                      │
-│     5-min tumbling windows · watermarks · Parquet sink             │
+│     5-min tumbling windows · watermarks · Parquet sink              │
 └────────────────────────────┬────────────────────────────────────────┘
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                       FEATURE STORE                                 │
-│                DuckDB (local dev) / Snowflake (prod)               │
-│     ELT models · rolling features · entity tables                  │
-│              Orchestrated by Apache Airflow DAGs                   │
-└──────────┬──────────────────────────────────────────┬──────────────┘
+│                DuckDB (local dev) / Snowflake (prod)                │
+│     ELT models · rolling features · entity tables                   │
+│              Orchestrated by Apache Airflow DAGs                    │
+└──────────┬──────────────────────────────────────────┬───────────────┘
            │                                          │
            ▼                                          ▼
 ┌──────────────────────┐                  ┌───────────────────────────┐
@@ -81,21 +81,21 @@ An end-to-end production ML system for real-time financial sentiment analysis an
                                ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                     HYBRID MODEL                                    │
-│          LightGBM (tabular + GNN embeddings)                       │
-│          Tracked and versioned with MLflow                         │
+│          LightGBM (tabular + GNN embeddings)                        │
+│          Tracked and versioned with MLflow                          │
 └────────────────────────────┬────────────────────────────────────────┘
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                      SERVING LAYER                                  │
-│                FastAPI · Docker · AWS SageMaker                    │
-│         /predict   /explain (SHAP)   /health   /shap-summary       │
+│                FastAPI · Docker · AWS SageMaker                     │
+│         /predict   /explain (SHAP)   /health   /shap-summary        │
 └────────────────────────────┬────────────────────────────────────────┘
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                   OBSERVABILITY                                     │
-│    Evidently AI (drift) · Prometheus · Grafana · Airflow alerts    │
+│    Evidently AI (drift) · Prometheus · Grafana · Airflow alerts     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -130,7 +130,9 @@ financial-intelligence-platform/
 │
 ├── docker-compose.yml              # Redpanda + Schema Registry + Prometheus + Grafana
 ├── requirements.txt
-<!-- ├── .env.example -->
+├── run_pipeline.py                 # Full pipeline runner (SQLite path, no Docker needed)
+├── check_data.py                   # Inspect row counts across SQLite and DuckDB
+├── .env.example
 │
 ├── schemas/
 │   ├── news_event_v1.avsc          # Avro schema for news headlines
@@ -138,8 +140,12 @@ financial-intelligence-platform/
 │   └── price_tick_v1.avsc          # Avro schema for price ticks
 │
 ├── ingestion/
+│   ├── tickers.py                  # Fortune 500 ticker registry and sector map
 │   ├── news_producer.py            # NewsAPI → Redpanda (Avro serialized)
-│   └── price_producer.py           # yfinance → Redpanda (Avro serialized)
+│   ├── price_producer.py           # yfinance → Redpanda (Avro serialized)
+│   ├── backfill_news.py            # One-shot 30-day historical backfill from NewsAPI
+│   ├── backfill_prices.py          # Historical OHLCV backfill from yfinance
+│   └── synthetic_news.py           # Seed synthetic headlines for tickers with no live coverage
 │
 ├── streaming/
 │   └── spark_consumer.py           # Spark Structured Streaming job
@@ -171,16 +177,36 @@ financial-intelligence-platform/
 │   ├── Dockerfile
 │   └── inference.py                # SageMaker entry point
 │
+├── scripts/
+│   ├── register_schemas.py         # Register Avro schemas with Redpanda schema registry
+│   ├── set_champion.py             # Promote an MLflow model version to champion alias
+│   ├── smoke_test.py               # End-to-end smoke test (SQLite path, no Docker needed)
+│   └── check_prices.py             # Verify price data in SQLite
+│
 ├── monitoring/
-│   ├── drift_report.py             # Evidently AI reports
+│   ├── drift_report.py             # Evidently AI drift reports
+│   ├── dashboard.py                # Build and serve monitoring dashboard
 │   ├── prometheus.yml
 │   └── grafana/
-│       └── dashboard.json          # Importable Grafana dashboard
+│       ├── dashboard.json          # Importable Grafana dashboard
+│       └── provisioning/
+│           ├── datasources/
+│           │   └── prometheus.yml
+│           └── dashboards/
+│               └── dashboard.yml
 │
-└── notebooks/
-    ├── 01_exploration.ipynb
-    ├── 02_feature_analysis.ipynb
-    └── 03_model_evaluation.ipynb
+├── tests/
+│   ├── conftest.py
+│   ├── ingestion/
+│   │   ├── test_news_producer.py
+│   │   └── test_price_producer.py
+│   └── serving/
+│       └── test_api.py
+│
+└── docs/
+    ├── project.md                  # Project overview and design notes
+    ├── steps.md                    # Build steps and implementation log
+    └── progress.md                 # Completion tracker
 ```
 
 ---

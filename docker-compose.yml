@@ -61,19 +61,22 @@ services:
   spark-streaming:
     image: apache/spark:3.5.0
     container_name: spark-streaming
+    user: root
+    entrypoint: ["/bin/bash", "-c"]
     command:
-      - /opt/spark/bin/spark-submit
-      - --master
-      - spark://spark-master:7077
-      - --conf
-      - spark.jars.ivy=/tmp/.ivy2
-      - --packages
-      - org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,org.apache.spark:spark-avro_2.12:3.5.1
-      - /opt/spark-app/streaming/spark_consumer.py
+      - >
+        /opt/spark/bin/spark-submit
+        --master spark://spark-master:7077
+        --conf spark.jars.ivy=/tmp/.ivy2
+        --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,org.apache.spark:spark-avro_2.12:3.5.0
+        /opt/spark-app/streaming/spark_consumer.py
     environment:
       - REDPANDA_BROKERS=redpanda:9092
       - SCHEMA_REGISTRY_URL=http://redpanda:8081
-      - CHECKPOINT_DIR=/opt/spark-app/data/checkpoints
+      - CHECKPOINT_DIR=/tmp/spark-checkpoints
+      - OUTPUT_DIR=/opt/spark-app/data/windowed
+      - SPARK_MASTER=spark://spark-master:7077
+      - STARTING_OFFSETS=earliest
     depends_on:
       - spark-master
       - redpanda
@@ -99,7 +102,9 @@ services:
       - serving
 
   airflow-init:
-    image: apache/airflow:2.9.1
+    build:
+      context: .
+      dockerfile: airflow/Dockerfile
     container_name: airflow-init
     entrypoint: /bin/bash
     command:
@@ -119,7 +124,9 @@ services:
       - airflow
 
   airflow-webserver:
-    image: apache/airflow:2.9.1
+    build:
+      context: .
+      dockerfile: airflow/Dockerfile
     container_name: airflow-webserver
     command: webserver
     environment:
@@ -141,7 +148,9 @@ services:
       - airflow
 
   airflow-scheduler:
-    image: apache/airflow:2.9.1
+    build:
+      context: .
+      dockerfile: airflow/Dockerfile
     container_name: airflow-scheduler
     command: scheduler
     environment:

@@ -4,15 +4,18 @@ import logging
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.avro.functions import from_avro
-from dotenv import load_dotenv
-
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-BROKER         = os.getenv("REDPANDA_BROKERS", "localhost:29092")
-CHECKPOINT_DIR = os.getenv("CHECKPOINT_DIR", "./data/checkpoints")
-OUTPUT_DIR     = "./data/windowed"
+BROKER            = os.getenv("REDPANDA_BROKERS", "localhost:29092")
+CHECKPOINT_DIR    = os.getenv("CHECKPOINT_DIR", "./data/checkpoints")
+OUTPUT_DIR        = os.getenv("OUTPUT_DIR", "./data/windowed")
+STARTING_OFFSETS  = os.getenv("STARTING_OFFSETS", "earliest")
 
 _SCHEMAS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "schemas")
 NEWS_SCHEMA_STR  = open(os.path.join(_SCHEMAS_DIR, "news_event_v1.avsc")).read()
@@ -27,8 +30,8 @@ def build_spark() -> SparkSession:
         .config("spark.sql.shuffle.partitions", "4")
         .config(
             "spark.jars.packages",
-            "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,"
-            "org.apache.spark:spark-avro_2.12:3.5.1",
+            "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,"
+            "org.apache.spark:spark-avro_2.12:3.5.0",
         )
         .getOrCreate()
     )
@@ -40,14 +43,15 @@ def read_topic(spark: SparkSession, topic: str):
         .format("kafka")
         .option("kafka.bootstrap.servers", BROKER)
         .option("subscribe", topic)
-        .option("startingOffsets", "latest")
+        .option("startingOffsets", STARTING_OFFSETS)
         .option("failOnDataLoss", "false")
         .load()
     )
 
 
 def parse_news(df):
-    """Strip the 5-byte Confluent magic prefix then deserialize Avro."""
+    """Strip the 5-byte Confluent magic prefix then deserialize Avro.
+    from_avro with timestamp-millis logicalType yields a TIMESTAMP column directly."""
     stripped = df.select(
         F.expr("substring(value, 6)").alias("avro_payload")
     )
@@ -55,13 +59,14 @@ def parse_news(df):
         stripped
         .select(from_avro("avro_payload", NEWS_SCHEMA_STR).alias("d"))
         .select("d.*")
-        .withColumn("event_time", (F.col("ts") / 1000).cast("timestamp"))
+        .withColumn("event_time", F.col("ts"))
         .withWatermark("event_time", "10 minutes")
     )
 
 
 def parse_prices(df):
-    """Strip the 5-byte Confluent magic prefix then deserialize Avro."""
+    """Strip the 5-byte Confluent magic prefix then deserialize Avro.
+    from_avro with timestamp-millis logicalType yields a TIMESTAMP column directly."""
     stripped = df.select(
         F.expr("substring(value, 6)").alias("avro_payload")
     )
@@ -69,7 +74,7 @@ def parse_prices(df):
         stripped
         .select(from_avro("avro_payload", PRICE_SCHEMA_STR).alias("d"))
         .select("d.*")
-        .withColumn("event_time", (F.col("ts") / 1000).cast("timestamp"))
+        .withColumn("event_time", F.col("ts"))
         .withWatermark("event_time", "10 minutes")
     )
 

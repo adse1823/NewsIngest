@@ -72,31 +72,54 @@ echo "[5/8] Running smoke test..."
 $PYTHON scripts/smoke_test.py --skip-train
 echo "      Smoke test passed."
 
-# ── 6. Start Docker services ───────────────────────────
+# ── 6. Replay SQLite data into Kafka topics ────────────
 echo ""
-echo "[6/8] Starting monitoring + Airflow..."
+echo "[6/10] Seeding Kafka topics from SQLite history..."
+$PYTHON ingestion/kafka_replay.py
+echo "       Topics seeded — Spark will find existing records at offset earliest."
+
+# ── 7. Start Spark streaming cluster ──────────────────
+echo ""
+echo "[7/10] Starting Spark streaming cluster..."
+echo "       First run: downloads Kafka + Avro JARs (~100 MB, ~2 min). Cached after that."
+docker compose --profile spark up -d
+echo "       Spark master UI: http://localhost:8080"
+echo "       Streaming job consuming news-raw + price-ticks → ./data/windowed/"
+
+# ── 8. Start Docker services ───────────────────────────
+echo ""
+echo "[8/10] Starting monitoring + Airflow..."
 docker compose --profile monitoring --profile airflow up -d
 
-# ── 7. Start API + MLflow in background ────────────────
+# ── 9. Start API + MLflow in background ────────────────
 echo ""
-echo "[7/8] Starting prediction API..."
+echo "[9/10] Starting prediction API (PID saved below)..."
 $PYTHON -m uvicorn serving.main:app --port 8000 &
 API_PID=$!
 
-echo "      Waiting for API on port 8000..."
+echo "       Waiting for API on port 8000..."
 until $PYTHON -c "import socket; socket.create_connection(('localhost', 8000), timeout=2).close()" 2>/dev/null; do
   sleep 2
 done
-echo "      API ready (PID $API_PID)."
+echo "       API ready (PID $API_PID)."
 
-# ── 8. Streamlit + MLflow UI ───────────────────────────
+# ── 10. Streamlit + MLflow UI + live producers ─────────
 echo ""
-echo "[8/8] Starting MLflow UI and Streamlit dashboard..."
+echo "[10/10] Starting MLflow UI, Streamlit, and live data producers..."
 $PYTHON -m mlflow ui --port 5000 --backend-store-uri ./mlruns &
 MLFLOW_PID=$!
 
 $PYTHON -m streamlit run monitoring/dashboard.py --server.port 8501 &
 STREAMLIT_PID=$!
+
+$PYTHON ingestion/news_producer.py &
+NEWS_PID=$!
+
+$PYTHON ingestion/price_producer.py &
+PRICE_PID=$!
+
+$PYTHON scripts/predict_loop.py &
+LOOP_PID=$!
 
 echo ""
 echo "=================================================="
@@ -108,9 +131,11 @@ echo "  Grafana:             http://localhost:3000  (admin / admin)"
 echo "  Prometheus:          http://localhost:9090"
 echo "  Airflow:             http://localhost:8888  (admin / admin)"
 echo "  MLflow:              http://localhost:5000"
+echo "  Spark master:        http://localhost:8080"
 echo ""
 echo "  PIDs — API: $API_PID  MLflow: $MLFLOW_PID  Streamlit: $STREAMLIT_PID"
-echo "  To stop: kill $API_PID $MLFLOW_PID $STREAMLIT_PID"
+echo "        News: $NEWS_PID  Prices: $PRICE_PID  Predict loop: $LOOP_PID"
+echo "  To stop: kill $API_PID $MLFLOW_PID $STREAMLIT_PID $NEWS_PID $PRICE_PID $LOOP_PID"
 echo "=================================================="
 
 wait

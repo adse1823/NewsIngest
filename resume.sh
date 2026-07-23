@@ -13,7 +13,7 @@ echo "=================================================="
 echo ""
 echo "[1/3] Starting Docker services..."
 docker compose up -d redpanda 2>/dev/null || docker start redpanda 2>/dev/null || true
-docker compose --profile monitoring --profile airflow up -d 2>/dev/null || true
+docker compose --profile monitoring --profile airflow --profile spark up -d 2>/dev/null || true
 
 echo "      Waiting for Redpanda..."
 until $PYTHON -c "import socket; socket.create_connection(('localhost', 29092), timeout=2).close()" 2>/dev/null; do
@@ -33,14 +33,23 @@ until $PYTHON -c "import socket; socket.create_connection(('localhost', 8000), t
 done
 echo "      API ready (PID $API_PID)."
 
-# ── 3. MLflow UI + Streamlit ───────────────────────────
+# ── 3. MLflow UI + Streamlit + live producers ──────────
 echo ""
-echo "[3/3] Starting MLflow UI and Streamlit dashboard..."
+echo "[3/3] Starting MLflow UI, Streamlit, and live data producers..."
 $PYTHON -m mlflow ui --port 5000 --backend-store-uri ./mlruns &
 MLFLOW_PID=$!
 
 $PYTHON -m streamlit run monitoring/dashboard.py --server.port 8501 &
 STREAMLIT_PID=$!
+
+$PYTHON ingestion/news_producer.py &
+NEWS_PID=$!
+
+$PYTHON ingestion/price_producer.py &
+PRICE_PID=$!
+
+$PYTHON scripts/predict_loop.py &
+LOOP_PID=$!
 
 echo ""
 echo "=================================================="
@@ -52,9 +61,11 @@ echo "  Grafana:             http://localhost:3000  (admin / admin)"
 echo "  Prometheus:          http://localhost:9090"
 echo "  Airflow:             http://localhost:8888  (admin / admin)"
 echo "  MLflow:              http://localhost:5000"
+echo "  Spark master:        http://localhost:8080"
 echo ""
 echo "  PIDs — API: $API_PID  MLflow: $MLFLOW_PID  Streamlit: $STREAMLIT_PID"
-echo "  To stop: kill $API_PID $MLFLOW_PID $STREAMLIT_PID"
+echo "        News: $NEWS_PID  Prices: $PRICE_PID  Predict loop: $LOOP_PID"
+echo "  To stop: kill $API_PID $MLFLOW_PID $STREAMLIT_PID $NEWS_PID $PRICE_PID $LOOP_PID"
 echo "=================================================="
 
 wait
