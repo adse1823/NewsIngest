@@ -128,10 +128,12 @@ An end-to-end production ML system for real-time financial sentiment analysis an
 ```
 financial-intelligence-platform/
 │
-├── docker-compose.yml              # Redpanda + Schema Registry + Prometheus + Grafana
-├── requirements.txt
-├── run_pipeline.py                 # Full pipeline runner (SQLite path, no Docker needed)
+├── docker-compose.yml              # All services (Redpanda, Spark, Airflow, Prometheus, Grafana)
+├── start.sh                        # Full startup from scratch (~10–50 min first run)
+├── resume.sh                       # Fast restart when data already exists (~30 s)
+├── run_pipeline.py                 # ML pipeline runner with --skip-* flags
 ├── check_data.py                   # Inspect row counts across SQLite and DuckDB
+├── requirements.txt
 ├── .env.example
 │
 ├── schemas/
@@ -140,73 +142,79 @@ financial-intelligence-platform/
 │   └── price_tick_v1.avsc          # Avro schema for price ticks
 │
 ├── ingestion/
-│   ├── tickers.py                  # Fortune 500 ticker registry and sector map
-│   ├── news_producer.py            # NewsAPI → Redpanda (Avro serialized)
-│   ├── price_producer.py           # yfinance → Redpanda (Avro serialized)
+│   ├── tickers.py                  # ~500 ticker registry and sector map
+│   ├── news_producer.py            # NewsAPI → SQLite + Redpanda (Avro, dual-write)
+│   ├── price_producer.py           # yfinance → SQLite + Redpanda (Avro, dual-write)
 │   ├── backfill_news.py            # One-shot 30-day historical backfill from NewsAPI
-│   ├── backfill_prices.py          # Historical OHLCV backfill from yfinance
-│   └── synthetic_news.py           # Seed synthetic headlines for tickers with no live coverage
+│   ├── backfill_prices.py          # Historical OHLCV backfill from yfinance (1y daily)
+│   ├── synthetic_news.py           # Seed synthetic headlines for tickers with no live coverage
+│   └── kafka_replay.py             # Replay SQLite history into Kafka topics (seeds Spark)
 │
 ├── streaming/
-│   └── spark_consumer.py           # Spark Structured Streaming job
+│   └── spark_consumer.py           # Spark Structured Streaming: 5-min windows → Parquet
 │
 ├── feature_store/
 │   ├── models/
 │   │   ├── raw_news.sql
-│   │   ├── features_sentiment.sql  # rolling window features
-│   │   └── entity_table.sql        # company/sector nodes
-│   └── export.py                   # exports Parquet for training
+│   │   ├── features_sentiment.sql  # Rolling window features (1h mean, 24h std, volume z-score)
+│   │   └── entity_table.sql        # Company/sector nodes
+│   └── export.py                   # DuckDB ELT: merges SQLite + Spark parquet → features_export.parquet
+│
+├── airflow/
+│   └── Dockerfile                  # Custom Airflow image with all project deps installed
 │
 ├── dags/
-│   └── fin_pipeline.py             # Airflow DAG
+│   └── fin_pipeline.py             # Daily Airflow DAG (2 AM): features → NLP → GNN → train → drift
 │
 ├── nlp/
-│   ├── sentiment.py                # FinBERT inference
-│   └── embeddings.py               # Mean-pool headline embeddings
+│   ├── sentiment.py                # FinBERT batch inference → DuckDB sentiment_scores table
+│   └── embeddings.py               # Mean-pool headline embeddings → headline_embeddings.npy
 │
 ├── graph/
-│   ├── build_graph.py              # NetworkX → PyG Data object
-│   └── train_gnn.py                # GraphSAGE training
+│   ├── build_graph.py              # Co-occurrence graph → PyG Data object
+│   └── train_gnn.py                # GraphSAGE self-supervised training → gnn_embeddings.parquet
 │
 ├── modeling/
-│   ├── train.py                    # LightGBM + MLflow
+│   ├── train.py                    # LightGBM + MLflow (TimeSeriesSplit, champion alias)
 │   └── evaluate.py                 # ROC-AUC, feature importance
 │
 ├── serving/
-│   ├── main.py                     # FastAPI app
+│   ├── main.py                     # FastAPI: /predict /explain /shap-summary /health /metrics
 │   ├── Dockerfile
-│   └── inference.py                # SageMaker entry point
+│   └── inference.py                # SageMaker serving entry point
 │
 ├── scripts/
 │   ├── register_schemas.py         # Register Avro schemas with Redpanda schema registry
 │   ├── set_champion.py             # Promote an MLflow model version to champion alias
-│   ├── smoke_test.py               # End-to-end smoke test (SQLite path, no Docker needed)
-│   └── check_prices.py             # Verify price data in SQLite
+│   ├── smoke_test.py               # End-to-end smoke test (no Docker needed)
+│   ├── check_prices.py             # Verify price data in SQLite
+│   └── predict_loop.py             # Background loop: calls /predict for all tickers → feeds Grafana
 │
 ├── monitoring/
-│   ├── drift_report.py             # Evidently AI drift reports
-│   ├── dashboard.py                # Build and serve monitoring dashboard
+│   ├── drift_report.py             # Evidently AI drift detection + auto-retrain trigger
+│   ├── dashboard.py                # Streamlit dashboard (sentiment, prices, predictions, SHAP)
 │   ├── prometheus.yml
 │   └── grafana/
-│       ├── dashboard.json          # Importable Grafana dashboard
+│       ├── dashboard.json
 │       └── provisioning/
-│           ├── datasources/
-│           │   └── prometheus.yml
-│           └── dashboards/
-│               └── dashboard.yml
+│           ├── datasources/prometheus.yml
+│           └── dashboards/dashboard.yml
 │
-├── tests/
+├── tests/                          # 130 tests, 1 skipped (PySpark not installed locally)
 │   ├── conftest.py
+│   ├── feature_store/
+│   ├── graph/
 │   ├── ingestion/
-│   │   ├── test_news_producer.py
-│   │   └── test_price_producer.py
-│   └── serving/
-│       └── test_api.py
+│   ├── modeling/
+│   ├── monitoring/
+│   ├── nlp/
+│   ├── serving/
+│   └── streaming/
 │
 └── docs/
-    ├── project.md                  # Project overview and design notes
-    ├── steps.md                    # Build steps and implementation log
-    └── progress.md                 # Completion tracker
+    ├── project.md
+    ├── steps.md
+    └── progress.md
 ```
 
 ---
@@ -216,123 +224,74 @@ financial-intelligence-platform/
 - Python 3.11+
 - Docker Desktop (8 GB RAM allocation recommended)
 - 16 GB system RAM minimum
-- Free API keys: [NewsAPI](https://newsapi.org), [AlphaVantage](https://www.alphavantage.co)
-- AWS account (free tier) for SageMaker sprint
-- Snowflake trial account for warehouse sprint
+- Free API key: [NewsAPI](https://newsapi.org)
+- Java 11+ (required for local Spark runs)
 
 > **Schema registry:** Ships built-in with Redpanda — no extra container or installation needed. Exposed on port 8081 alongside the broker on port 29092.
-
-> **RAM management:** Never run all services simultaneously. The pipeline is designed to run in phases. See the [Pipeline Walkthrough](#pipeline-walkthrough) section for guidance on what to run at each stage.
 
 ---
 
 ## Quickstart
 
-### 1. Clone and install dependencies
+### First run (data and models don't exist yet)
 
 ```bash
-git clone https://github.com/your-username/financial-intelligence-platform
-cd financial-intelligence-platform
+cp .env.example .env          # add NEWS_API_KEY
 pip install -r requirements.txt
+bash start.sh
 ```
 
-### 2. Set environment variables
+`start.sh` runs the full sequence automatically (~10–50 min on first run):
+
+1. Start Redpanda and wait for readiness
+2. Register Avro schemas
+3. Backfill 30 days of news + prices from NewsAPI / yfinance (skipped if DB already has data)
+4. Seed synthetic headlines for tickers with no live coverage
+5. Run the ML pipeline (features → FinBERT → GNN → LightGBM)
+6. Smoke test
+7. Replay SQLite history into Kafka topics so Spark has data at offset `earliest`
+8. Start Spark streaming cluster
+9. Start monitoring + Airflow
+10. Start prediction API, MLflow UI, Streamlit dashboard, live producers, and prediction loop
+
+### Subsequent runs (data and models already exist)
 
 ```bash
-cp .env.example .env
-# Fill in: NEWS_API_KEY, ALPHAVANTAGE_API_KEY, AWS credentials (optional)
+bash resume.sh    # ~30 seconds
 ```
 
-### 3. Start the broker and schema registry
+Skips backfill, pipeline, and smoke test. Restarts all services with existing data.
 
-```bash
-docker-compose up redpanda -d
-# Verify broker:          curl http://localhost:9644/v1/cluster/health
-# Verify schema registry: curl http://localhost:8081/subjects
-```
+### Service URLs
 
-### 4. Register schemas
+| Service | URL | Credentials |
+| --- | --- | --- |
+| Streamlit dashboard | `http://localhost:8501` | — |
+| Prediction API (Swagger) | `http://localhost:8000/docs` | — |
+| Grafana | `http://localhost:3000` | admin / admin |
+| Prometheus | `http://localhost:9090` | — |
+| Airflow | `http://localhost:8888` | admin / admin |
+| MLflow | `http://localhost:5000` | — |
+| Spark master | `http://localhost:8080` | — |
 
-```bash
-# Register the news event schema
-curl -X POST http://localhost:8081/subjects/news-raw-value/versions \
-  -H "Content-Type: application/json" \
-  -d "{\"schema\": $(cat schemas/news_event_v1.avsc | jq -Rs .)}"
-
-# Register the price tick schema
-curl -X POST http://localhost:8081/subjects/price-ticks-value/versions \
-  -H "Content-Type: application/json" \
-  -d "{\"schema\": $(cat schemas/price_tick_v1.avsc | jq -Rs .)}"
-
-# Confirm registration
-curl http://localhost:8081/subjects
-# Expected: ["news-raw-value","price-ticks-value"]
-```
-
-### 5. Start producers
-
-```bash
-python ingestion/news_producer.py &
-python ingestion/price_producer.py &
-```
-
-### 6. Run the Spark consumer
-
-```bash
-python streaming/spark_consumer.py
-# Parquet files will appear in ./data/windowed/
-```
-
-### 7. Run feature engineering
-
-```bash
-python feature_store/export.py
-# Outputs: features_export.parquet
-```
-
-### 8. Train the model
-
-```bash
-python modeling/train.py
-# MLflow UI: mlflow ui --port 5000
-```
-
-### 9. Start the API
-
-```bash
-docker build -t fin-api ./serving
-docker run -p 8000:8000 fin-api
-```
-
-### 10. Test a prediction
+### Test a prediction manually
 
 ```bash
 curl -X POST http://localhost:8000/predict \
   -H "Content-Type: application/json" \
   -d '{
-    "rolling_1h_mean": 12.4,
-    "rolling_24h_std": 3.1,
-    "pos": 0.61,
-    "neg": 0.12,
-    "neu": 0.27,
-    "gnn_dims": [0.12, -0.05, 0.33, ...]
+    "rolling_1h_mean": 1.0,
+    "rolling_24h_std": 0.17,
+    "volume_zscore": -0.32,
+    "pos": 0.4,
+    "neg": 0.2,
+    "neu": 0.4,
+    "gnn_dims": []
   }'
 ```
 
-Expected response:
 ```json
-{
-  "direction": "up",
-  "confidence": 0.673
-}
-```
-
-### 11. Start monitoring stack
-
-```bash
-docker-compose up prometheus grafana -d
-# Grafana: http://localhost:3000 (admin/admin)
-# Import monitoring/grafana/dashboard.json
+{ "direction": "down", "confidence": 0.69 }
 ```
 
 ---
@@ -412,7 +371,7 @@ DuckDB reads the Parquet output and materializes a set of analytical models:
 
 All models are defined as SQL files under `feature_store/models/` and run in dependency order by the Airflow DAG. This mirrors the dbt-style modular SQL pattern used in production Snowflake workflows.
 
-**Snowflake sprint (week 4):** The same models are migrated to Snowflake to cover three concepts DuckDB cannot: Snowpipe for auto-ingest from S3, Time Travel for point-in-time querying, and micro-partition clustering keys for query acceleration.
+The same SQL model patterns transfer directly to Snowflake (Snowpipe, Time Travel, clustering keys) if a cloud warehouse is needed.
 
 ---
 
@@ -541,41 +500,26 @@ Old consumers reading v1 messages still work — `sentiment_score` defaults to `
 
 ## Testing
 
-The test suite covers all pipeline layers. Tests are integrated week by week alongside the build, not added at the end.
-
 ```bash
-# Install test dependencies
-pip install pytest pytest-cov great-expectations
-
-# Run all tests
 pytest tests/ -v
+# 130 passed, 1 skipped (PySpark not installed locally — streaming schema tests skip cleanly)
 
-# Run with coverage report
-pytest tests/ --cov=. --cov-report=term-missing
-
-# Run a specific layer
-pytest tests/ingestion/ -v
-pytest tests/streaming/ -v
-pytest tests/serving/ -v
+pytest tests/ --cov=. --cov-report=term-missing   # with coverage
+pytest tests/ingestion/ -v                          # single layer
 ```
 
 **Test categories by layer:**
 
-| Layer | Test type | What's covered |
-|---|---|---|
-| Ingestion | Unit + mocks | Serialization, API failure handling, schema validation |
-| Schema registry | Integration | Compatibility checks, registration, rejection of breaking changes |
-| Spark streaming | Unit on static data | Window aggregation, watermark logic, malformed message handling |
-| Feature store | Unit with in-memory DuckDB | SQL model correctness, no duplicate keys, rolling window values |
-| NLP pipeline | Unit with mocked model | Output shape, probability validity, empty input handling |
-| Graph construction | Unit | Node/edge count, no self-loops, feature tensor shape |
-| Model | Behavioral | AUC above baseline, column order invariance, SHAP output length |
-| FastAPI | Integration with TestClient | All endpoints, 422 on bad input, confidence bounds |
-| Drift monitoring | Unit | Drift detection threshold, retrain trigger logic |
-
-**CI pipeline** — tests run automatically on every push via GitHub Actions (`.github/workflows/test.yml`). Model tests are excluded from CI as they require a trained artifact; all other layers run in under 60 seconds.
-
-![Tests](https://github.com/your-username/fin-platform/actions/workflows/test.yml/badge.svg)
+| Layer | Tests | What's covered |
+| --- | --- | --- |
+| Ingestion | Unit + mocks | Avro serialization, Confluent wire format, API failure handling |
+| Streaming | Unit (no Spark) | Avro schema validity, module constants, kafka_replay publish logic |
+| Feature store | In-memory DuckDB | SQL model correctness, SQLite attach, Spark parquet merge path |
+| NLP | Mocked model | Softmax validity, batch sizing, empty input, mean pooling |
+| Graph | Unit | Co-occurrence edges/weights, GNN forward shape, masked feature loss |
+| Modeling | Behavioral | Label creation, GNN embedding attach, LightGBM params |
+| Monitoring | Unit | Drift threshold, retrain trigger, data split logic |
+| FastAPI | TestClient | All endpoints, 422 on bad input, confidence bounds |
 
 ---
 
@@ -645,18 +589,18 @@ Values correspond to feature columns in the order: `rolling_1h_mean`, `rolling_2
 ## Results
 
 | Metric | Value |
-|---|---|
-| Mean ROC-AUC (5-fold TimeSeriesSplit) | 0.61 |
+| --- | --- |
+| Mean ROC-AUC (5-fold TimeSeriesSplit) | 0.6721 |
 | Naive baseline (predict majority class) | 0.50 |
-| Prediction latency p50 | 18 ms |
-| Prediction latency p95 | 34 ms |
+| Training data | 28,267 news articles · 145,214 price rows · 502 tickers |
 | Drift detection threshold | 0.30 (share of drifted columns) |
-| Retraining trigger frequency | ~2–3x per month on live data |
 
 **Top features by SHAP importance:**
-1. `rolling_1h_mean` — short-term headline volume most predictive
-2. `gnn_dim_7`, `gnn_dim_19` — sector-level co-occurrence signal
-3. `pos` — positive sentiment score from FinBERT
+
+1. GNN embedding dimensions — sector-level co-occurrence signal dominates
+2. `pos` / `neg` — FinBERT sentiment scores
+3. `volume_zscore` — abnormal volume precedes moves
+4. `rolling_1h_mean` — low variance in practice (most windows = 1.0 headline)
 
 ---
 
@@ -680,11 +624,11 @@ Values correspond to feature columns in the order: `rolling_1h_mean`, `rolling_2
 
 ## Roadmap
 
+- Fix Spark streaming on Windows (bind-mount write permission issue blocks parquet output)
 - Replace DuckDB feature store with Feast for truly real-time feature serving at inference time
 - Add Protobuf schemas as an alternative to Avro for gRPC-compatible serialization
 - Add a second GNN layer with graph attention to capture higher-order relationships
 - Extend to multi-class prediction (up / flat / down) with calibrated probabilities
-- Add CI/CD pipeline using GitHub Actions to auto-run drift checks and schema compatibility on PR merge
 - Kubernetes deployment manifest for multi-replica serving
 
 ---
